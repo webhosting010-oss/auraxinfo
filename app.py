@@ -1,0 +1,1214 @@
+# ==============================================================================
+#  AURA OSINT HUB - API + Admin Panel
+#  Wraps upstream OSINT APIs behind your own key-system + admin panel.
+# ==============================================================================
+import os
+import sys
+import json
+import time
+import sqlite3
+import secrets
+import urllib.request
+import urllib.parse
+from functools import wraps
+from datetime import datetime, timedelta
+
+from flask import (Flask, request, session, redirect, url_for, render_template,
+                   Response, flash, get_flashed_messages, jsonify, g)
+from werkzeug.security import generate_password_hash, check_password_hash
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "osint_hub.db")
+SECRET_FILE = os.path.join(DATA_DIR, "secret.key")
+
+PORT = int(os.environ.get("PORT", "5005"))
+HOST = os.environ.get("HOST", "0.0.0.0")
+
+DEFAULT_DEVELOPER = os.environ.get("DEVELOPER", "@Yourr_aura")
+ADMIN_USER = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "aura@9751")
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# ---------------------------------------------------------------- session key
+if os.path.exists(SECRET_FILE):
+    with open(SECRET_FILE, "r") as fh:
+        app.secret_key = fh.read().strip()
+else:
+    app.secret_key = secrets.token_hex(32)
+    with open(SECRET_FILE, "w") as fh:
+        fh.write(app.secret_key)
+
+# ----------------------------------------------------------------------- db
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS admins(
+  id INTEGER PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT DEFAULT 'admin',
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  is_active INTEGER DEFAULT 1,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS api_keys(
+  id INTEGER PRIMARY KEY,
+  key TEXT UNIQUE NOT NULL,
+  client TEXT DEFAULT '',
+  note TEXT DEFAULT '',
+  allowed TEXT DEFAULT 'all',            -- 'all' or csv of endpoint slugs
+  usage_mode TEXT DEFAULT 'unlimited',   -- unlimited | rate_limited | fixed_cap
+  daily_limit INTEGER DEFAULT 0,         -- 0 = unlimited
+  per_min_limit INTEGER DEFAULT 0,       -- 0 = unlimited
+  total_cap INTEGER DEFAULT 0,           -- 0 = unlimited (fixed cap mode)
+  total_hits INTEGER DEFAULT 0,
+  today_hits INTEGER DEFAULT 0,
+  today_date TEXT DEFAULT '',
+  minute_hits INTEGER DEFAULT 0,
+  minute_start INTEGER DEFAULT 0,
+  is_active INTEGER DEFAULT 1,
+  expires_at TEXT,                       -- ISO date or NULL for lifetime
+  style_developer TEXT DEFAULT '',       -- per-key developer override
+  style_template TEXT DEFAULT '',        -- per-key JSON template (raw)
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS endpoints(
+  id INTEGER PRIMARY KEY,
+  slug TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  emoji TEXT DEFAULT '🔌',
+  url_template TEXT NOT NULL,
+  upstream_key TEXT DEFAULT '',
+  enabled INTEGER DEFAULT 1,
+  term_param TEXT DEFAULT 'term',
+  sort_order INTEGER DEFAULT 999,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS logs(
+  id INTEGER PRIMARY KEY,
+  key_id INTEGER,
+  key_string TEXT,
+  endpoint TEXT,
+  term TEXT,
+  status_code INTEGER,
+  success INTEGER,
+  response_time REAL,
+  message TEXT DEFAULT '',
+  response_preview TEXT DEFAULT '',
+  ip TEXT DEFAULT '',
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS login_attempts(
+  id INTEGER PRIMARY KEY,
+  username TEXT,
+  role TEXT DEFAULT 'unknown',
+  ip TEXT DEFAULT '',
+  status TEXT,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS settings(
+  k TEXT PRIMARY KEY,
+  v TEXT
+);
+"""
+
+def init_db():
+    conn = db()
+    conn.executescript(SCHEMA)
+    # seed endpoints
+    if conn.execute("SELECT COUNT(*) c FROM endpoints").fetchone()["c"] == 0:
+        rows = [
+            ("num",    "Number Info",       "📱", "http://uersxinfo.in/api?key={upstream_key}&type=mobile&term={term}",
+             "numcudt", "term", 1),
+            ("tg",     "TG to Number",      "📞", "https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}",
+             "6051223b2f1c424bbf9257b371506d52", "username", 2),
+            ("numpak", "Pakistan Number",   "🇵🇰", "http://wasifali.biz.id/public_apis/sim-info-api.php?search={term}",
+             "", "", 3),
+            ("osint",  "OSINT Search",      "🔎", "https://l34k-osint.onrender.com/search?key={upstream_key}&query={term}",
+             "028d9205ebab1366bd43d8835e1f7cf9", "term", 4),
+        ]
+        for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
+            conn.execute(
+                "INSERT OR IGNORE INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)", (slug, name, emoji, tpl, ekey, tp, srt, now_iso()))
+    # migration: tg endpoint -> {param} placeholder (auto username/userid)
+    conn.execute(
+        "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
+        "term_param='username' WHERE slug='tg' AND url_template LIKE '%username={term}%'")
+    # seed demo key
+    if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
+        conn.execute(
+            "INSERT INTO api_keys(key,client,note,allowed,usage_mode,is_active,created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            ("DEMO123", "Demo", "Auto-seeded demo key — delete it after testing",
+             "all", "unlimited", 1, now_iso()))
+    # default admin
+    if conn.execute("SELECT COUNT(*) c FROM admins").fetchone()["c"] == 0:
+        u = ADMIN_USER
+        p = ADMIN_PASS
+        conn.execute("INSERT INTO admins(username,password_hash,role,created_at) VALUES(?,?,?,?)",
+                     (u, generate_password_hash(p), "head admin", now_iso()))
+        print(f"[BOOT] Admin created -> username: {u}  password: {p}  (change it in Settings)", flush=True)
+    conn.commit()
+    conn.close()
+
+def now_iso():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def today_str():
+    return datetime.now().strftime("%Y-%m-%d")
+
+# ----------------------------------------------------------------- settings
+def set_setting(k, v):
+    conn = db()
+    conn.execute("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
+    conn.commit(); conn.close()
+
+def get_setting(k, d=""):
+    conn = db()
+    row = conn.execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
+    conn.close()
+    return row["v"] if row else d
+
+def developer_name():
+    return get_setting("developer", DEFAULT_DEVELOPER) or DEFAULT_DEVELOPER
+
+# ------------------------------------------------------------------- helpers
+def get_endpoint(slug):
+    conn = db()
+    row = conn.execute("SELECT * FROM endpoints WHERE slug=?", (slug,)).fetchone()
+    conn.close()
+    return row
+
+def all_endpoints():
+    conn = db()
+    rows = conn.execute("SELECT * FROM endpoints ORDER BY sort_order, id").fetchall()
+    conn.close()
+    return rows
+
+def get_key_raw(key):
+    if not key:
+        return None
+    conn = db()
+    row = conn.execute("SELECT * FROM api_keys WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return row
+
+def key_allowed_for(key_row, slug):
+    allowed = (key_row["allowed"] or "all").strip()
+    if allowed == "all":
+        return True
+    return slug in [a.strip() for a in allowed.split(",") if a.strip()]
+
+def remaining_days(expires_at):
+    if not expires_at:
+        return 0, "Lifetime"
+    try:
+        exp = datetime.strptime(expires_at[:10], "%Y-%m-%d")
+        days = (exp.date() - datetime.now().date()).days
+        return days, exp.strftime("%Y-%m-%d")
+    except Exception:
+        return 0, "Lifetime"
+
+def is_expired(key_row):
+    if not key_row["expires_at"]:
+        return False
+    days, _ = remaining_days(key_row["expires_at"])
+    return days < 0
+
+def register_hit(key_row):
+    """Advance all usage counters; auto-disable key when fixed cap reached."""
+    now = datetime.now()
+    today = today_str()
+    th = key_row["today_hits"] if key_row["today_date"] == today else 0
+    epoch = int(time.time())
+    ms = key_row["minute_start"] or 0
+    mh = key_row["minute_hits"] if (epoch - ms) < 60 else 0
+    th += 1
+    mh += 1
+    capped = False
+    conn = db()
+    conn.execute(
+        "UPDATE api_keys SET today_hits=?, today_date=?, minute_hits=?, minute_start=?, total_hits=total_hits+1 "
+        "WHERE id=?", (th, today, mh, epoch, key_row["id"]))
+    k = conn.execute("SELECT total_hits, total_cap, usage_mode, is_active FROM api_keys WHERE id=?",
+                     (key_row["id"],)).fetchone()
+    if (k["usage_mode"] == "fixed_cap" and k["total_cap"] > 0
+            and k["total_hits"] >= k["total_cap"] and k["is_active"] == 1):
+        conn.execute("UPDATE api_keys SET is_active=0 WHERE id=?", (key_row["id"],))
+        capped = True
+    conn.commit(); conn.close()
+    return {"total_hits": k["total_hits"], "capped": capped}
+
+def add_log(key_row, endpoint, term, status_code, success, rtime, message="", preview=""):
+    conn = db()
+    conn.execute(
+        "INSERT INTO logs(key_id,key_string,endpoint,term,status_code,success,response_time,message,"
+        "response_preview,ip,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (key_row["id"] if key_row else None,
+         key_row["key"] if key_row else "",
+         endpoint, (term or "")[:120], status_code, 1 if success else 0, rtime,
+         message[:300], (preview or "")[:600],
+         request.headers.get("X-Forwarded-For", request.remote_addr or ""), now_iso()))
+    conn.commit(); conn.close()
+
+def log_login_attempt(username, role, status):
+    conn = db()
+    conn.execute("INSERT INTO login_attempts(username,role,ip,status,created_at) VALUES(?,?,?,?,?)",
+                 (username[:60], role, request.headers.get("X-Forwarded-For", request.remote_addr or ""),
+                  status, now_iso()))
+    conn.commit(); conn.close()
+
+# --------------------------------------------------------------- api output
+PLACEHOLDERS = ("__DATA__", "__KEY_DETAILS__", "__DEVELOPER__", "__SUCCESS__",
+                "__STATUS_CODE__", "__HTTP_STATUS__", "__ENDPOINT__", "__TERM__")
+
+# country dial codes for auto-detection
+DIAL_MAP = {
+    "93":"Afghanistan","355":"Albania","213":"Algeria","376":"Andorra","244":"Angola","374":"Armenia",
+    "297":"Aruba","61":"Australia","43":"Austria","994":"Azerbaijan","973":"Bahrain","880":"Bangladesh",
+    "375":"Belarus","32":"Belgium","501":"Belize","229":"Benin","975":"Bhutan","591":"Bolivia",
+    "387":"Bosnia & Herzegovina","267":"Botswana","55":"Brazil","673":"Brunei","359":"Bulgaria",
+    "226":"Burkina Faso","257":"Burundi","855":"Cambodia","237":"Cameroon","236":"Central African Rep.",
+    "235":"Chad","56":"Chile","86":"China","57":"Colombia","269":"Comoros","242":"Congo","243":"DR Congo",
+    "506":"Costa Rica","225":"Cote d'Ivoire","385":"Croatia","53":"Cuba","357":"Cyprus","420":"Czechia",
+    "45":"Denmark","253":"Djibouti","593":"Ecuador","20":"Egypt","503":"El Salvador","372":"Estonia",
+    "251":"Ethiopia","679":"Fiji","358":"Finland","33":"France","241":"Gabon","220":"Gambia","995":"Georgia",
+    "49":"Germany","233":"Ghana","350":"Gibraltar","30":"Greece","502":"Guatemala","224":"Guinea",
+    "592":"Guyana","509":"Haiti","504":"Honduras","852":"Hong Kong","36":"Hungary","354":"Iceland",
+    "91":"India","62":"Indonesia","98":"Iran","964":"Iraq","353":"Ireland","972":"Israel","39":"Italy",
+    "81":"Japan","962":"Jordan","254":"Kenya","965":"Kuwait","996":"Kyrgyzstan","856":"Laos","371":"Latvia",
+    "961":"Lebanon","218":"Libya","423":"Liechtenstein","370":"Lithuania","352":"Luxembourg","853":"Macau",
+    "389":"North Macedonia","261":"Madagascar","265":"Malawi","60":"Malaysia","960":"Maldives","223":"Mali",
+    "356":"Malta","222":"Mauritania","230":"Mauritius","52":"Mexico","373":"Moldova","377":"Monaco",
+    "976":"Mongolia","382":"Montenegro","212":"Morocco","258":"Mozambique","95":"Myanmar","264":"Namibia",
+    "977":"Nepal","31":"Netherlands","64":"New Zealand","505":"Nicaragua","227":"Niger","234":"Nigeria",
+    "850":"North Korea","47":"Norway","968":"Oman","92":"Pakistan","507":"Panama","675":"Papua New Guinea",
+    "595":"Paraguay","51":"Peru","63":"Philippines","48":"Poland","351":"Portugal","974":"Qatar",
+    "40":"Romania","378":"San Marino","966":"Saudi Arabia","221":"Senegal","381":"Serbia","248":"Seychelles",
+    "232":"Sierra Leone","65":"Singapore","421":"Slovakia","386":"Slovenia","252":"Somalia",
+    "27":"South Africa","82":"South Korea","34":"Spain","94":"Sri Lanka","249":"Sudan","597":"Suriname",
+    "46":"Sweden","41":"Switzerland","963":"Syria","886":"Taiwan","992":"Tajikistan","255":"Tanzania",
+    "66":"Thailand","670":"Timor-Leste","228":"Togo","216":"Tunisia","90":"Turkey","993":"Turkmenistan",
+    "256":"Uganda","380":"Ukraine","971":"UAE","44":"United Kingdom","598":"Uruguay","58":"Venezuela",
+    "84":"Vietnam","681":"Wallis & Futuna","967":"Yemen","260":"Zambia","263":"Zimbabwe",
+    "1":"United States/Canada","7":"Russia/Kazakhstan",
+}
+
+def detect_country(ccode, raw_number):
+    """country_code field pehle, warna '+...' number ke prefix se dial-code lookup."""
+    c = (ccode or "").strip()
+    if c and c not in ("❓", "?", "-", "NA"):
+        d = c.lstrip("+")
+        if d in DIAL_MAP:
+            return DIAL_MAP[d], "+" + d
+    raw = (raw_number or "").strip()
+    if raw.startswith("+"):
+        digs = raw[1:].replace(" ", "").replace("-", "")
+        for L in (4, 3, 2, 1):
+            if digs[:L] in DIAL_MAP:
+                return DIAL_MAP[digs[:L]], "+" + digs[:L]
+    return "Unknown", "-"
+
+def normalize_tg(upstream, term):
+    """tg endpoint ko user-started clean style me normalize karo:
+    {result:{country,country_code,msg,number,success,[tg_username],tg_id}, status, cached}"""
+    numeric = term.lstrip("@").isdigit()
+    res = {"country": "Unknown", "country_code": "-", "msg": "Details not found",
+           "number": "", "success": False}
+    phones = upstream.get("phone") if isinstance(upstream, dict) else None
+    if isinstance(phones, list) and phones:
+        p = phones[0] if isinstance(phones[0], dict) else {}
+        raw = str(p.get("number") or "").strip()
+        if raw:
+            ctry, ccx = detect_country(p.get("country_code") or "", raw)
+            res["msg"] = "Details fetched"
+            res["success"] = True
+            res["number"] = raw.lstrip("+")
+            res["country"] = ctry
+            res["country_code"] = ccx
+            if not numeric:
+                uname = upstream.get("username") or term
+                res["tg_username"] = str(uname).lstrip("@")
+            res["tg_id"] = str(upstream.get("tg_id") or term)
+    return {"result": res, "status": bool(res["success"]), "cached": False}
+
+def reorder_tg(env):
+    """key_details ko 'result' ke turant baad rakho (sample style)."""
+    if "result" in env and "key_details" in env:
+        out = {"result": env["result"], "key_details": env["key_details"]}
+        for k, v in env.items():
+            if k not in ("result", "key_details"):
+                out[k] = v
+        return out
+    return env
+
+FOOTER_ORDER = ("developer", "success", "status_code", "http_status")
+
+def build_envelope(upstream, key_after, status_code=200, message=""):
+    """Wrap upstream payload in our own envelope.
+    Order: sab data fields -> key_details -> developer -> success -> status_code -> http_status.
+    (Upstream ka apna developer/success/status_code/http_status bhi footer me shift hota hai.)"""
+    if isinstance(upstream, dict):
+        envelope = {k: v for k, v in upstream.items()
+                    if k != "key_details" and k not in FOOTER_ORDER}
+    elif upstream is not None:
+        envelope = {"data": upstream}
+    else:
+        envelope = {}
+    days, expires_on = remaining_days(key_after["expires_at"])
+    envelope["key_details"] = {
+        "used_today": key_after["today_hits"] + 1,
+        "daily_limit": key_after["daily_limit"] if key_after["daily_limit"] > 0 else 0,
+        "valid_days": days if key_after["expires_at"] else 0,
+        "expires_on": expires_on,
+    }
+    envelope["developer"] = key_after["style_developer"] or developer_name()
+    envelope["success"] = (200 <= status_code < 300)
+    envelope["status_code"] = status_code
+    envelope["http_status"] = status_code
+    if message:
+        envelope["message"] = message
+    return envelope
+
+def apply_key_style(envelope, key_row, status_code):
+    """Per-key custom response template (raw JSON string with placeholders)."""
+    tpl = (key_row["style_template"] or "").strip()
+    if not tpl:
+        return envelope
+    clean = {k: v for k, v in envelope.items()
+             if k not in ("key_details", "developer", "success", "status_code", "http_status", "message")}
+    data = json.dumps(clean, ensure_ascii=False)
+    out = (tpl
+           .replace("__DATA__", data)
+           .replace("__KEY_DETAILS__", json.dumps(envelope.get("key_details", {}), ensure_ascii=False))
+           .replace("__DEVELOPER__", json.dumps(envelope.get("developer", ""), ensure_ascii=False))
+           .replace("__SUCCESS__", json.dumps(envelope.get("success", False)))
+           .replace("__STATUS_CODE__", str(envelope.get("status_code", status_code)))
+           .replace("__HTTP_STATUS__", str(envelope.get("http_status", status_code)))
+           .replace("__ENDPOINT__", json.dumps(g.get("api_slug", request.view_args.get("slug", "")), ensure_ascii=False))
+           .replace("__TERM__", json.dumps(list(request.args.values())[-1] if request.args else "", ensure_ascii=False)))
+    try:
+        return json.loads(out)
+    except Exception:
+        return envelope
+
+def api_error(key_row, slug, code, err, msg=""):
+    """Consistent error envelope — keeps developer/@style, no data."""
+    if key_row is not None:
+        k = dict(key_row)
+    else:
+        k = {"style_developer": "", "style_template": "", "expires_at": None,
+             "today_hits": 0, "daily_limit": 0}
+    envelope = {
+        "error": err,
+        "key_details": None,
+        "developer": k.get("style_developer") or developer_name(),
+        "success": False,
+        "status_code": code,
+        "http_status": code,
+    }
+    if msg:
+        envelope["message"] = msg
+    if key_row:
+        add_log(key_row, slug, first_term(), code, False, 0, err)
+    return envelope, code
+
+def json_out(env, code):
+    return Response(json.dumps(env, ensure_ascii=False, indent=2),
+                    status=code, mimetype="application/json")
+
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id")
+def first_term():
+    for t in TERMS:
+        v = request.args.get(t, "").strip()
+        if v:
+            return v
+    return ""
+
+def resolve_term_param(ep, term):
+    """tg endpoint: numeric IDs ko `userid=` param se bhejo, usernames ko `username=`."""
+    if (ep["slug"] or "") == "tg":
+        return "userid" if term.isdigit() else "username"
+    return ep["term_param"] or "term"
+
+def fetch_upstream(ep, term):
+    """Call upstream URL template, return (parsed_json_or_None, elapsed_ms, error_text)."""
+    url = (ep["url_template"]
+           .replace("{upstream_key}", urllib.parse.quote(ep["upstream_key"] or ""))
+           .replace("{param}", resolve_term_param(ep, term))
+           .replace("{term}", urllib.parse.quote(term)))
+    headers = {"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)", "Accept": "application/json"}
+    req = urllib.request.Request(url, headers=headers)
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=28) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        dt = round((time.time() - t0) * 1000, 1)
+        try:
+            return json.loads(raw), dt, None
+        except Exception:
+            return {"raw": raw[:800]}, dt, None
+    except urllib.error.HTTPError as e:
+        return None, round((time.time() - t0) * 1000, 1), f"upstream HTTP {e.code}"
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
+
+# ------------------------------------------------------------------ API API
+# type param -> internal slug aliases
+TYPE_MAP = {
+    "tg_to_num": "tg", "tg2num": "tg", "tg2number": "tg", "telegram": "tg", "tg": "tg",
+    "mobile": "num", "num": "num", "number": "num", "num_info": "num", "numcmd": "num",
+    "pak_info": "numpak", "pak": "numpak", "numpak": "numpak", "pakistan_sim": "numpak",
+    "sim_info": "numpak", "paknum": "numpak",
+    "osint": "osint", "osint_search": "osint", "multi": "osint",
+}
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint"
+
+@app.route("/api")
+def api_typed():
+    """Single-endpoint style: /api?key=KEY&type=tg_to_num&term=..."""
+    t = (request.args.get("type") or "").strip().lower()
+    if not t:
+        return json_out(api_error(None, "unknown", 400, "Missing type parameter",
+                                  f"add type param: {TYPE_LIST} (or call /api/<type>)")[0], 400)
+    slug = TYPE_MAP.get(t)
+    if not slug:
+        return json_out(api_error(None, t[:40], 404, f"Unknown type '{t[:40]}'",
+                                  f"available types: {TYPE_LIST}")[0], 404)
+    return serve_api(slug)
+
+@app.route("/api/<slug>")
+def api_entry(slug):
+    """Direct style: /api/num, /api/tg ... (type aliases bhi batenge)."""
+    mapped = TYPE_MAP.get(slug)
+    if mapped and mapped != slug:
+        return serve_api(mapped)
+    return serve_api(slug)
+
+def serve_api(slug):
+    ep = get_endpoint(slug)
+    kv = request.args.get("key", "").strip()
+    g.api_slug = slug  # apply_key_style ka __ENDPOINT__ iska use karega
+
+    if not ep:
+        env, code = api_error(None, slug, 404, "Unknown endpoint")
+        return json_out(env, code)
+    if not ep["enabled"]:
+        env, code = api_error(None, slug, 503, "Endpoint under maintenance",
+                              get_setting("maintenance_message", "API is currently under maintenance."))
+        return json_out(env, code)
+
+    term = first_term()
+    key_row = get_key_raw(kv)
+
+    if not kv or not key_row:
+        env, code = api_error(None, slug, 401, "Invalid API key")
+        return json_out(env, code)
+    if not key_row["is_active"]:
+        env, code = api_error(key_row, slug, 403, "Key disabled")
+        return json_out(env, code)
+    if is_expired(key_row):
+        env, code = api_error(key_row, slug, 410, "Key expired")
+        return json_out(env, code)
+    if not key_allowed_for(key_row, slug):
+        env, code = api_error(key_row, slug, 403, "Key not allowed for this endpoint")
+        return json_out(env, code)
+    if not term:
+        env, code = api_error(key_row, slug, 400, "Missing search term",
+                              f"add one of the params: {', '.join(TERMS)}")
+        return json_out(env, code)
+
+    # ---- limits
+    days_left, exp_on = remaining_days(key_row["expires_at"])
+    today = today_str()
+    used_today = key_row["today_hits"] if key_row["today_date"] == today else 0
+    epoch = int(time.time())
+    minute_used = key_row["minute_hits"] if (epoch - (key_row["minute_start"] or 0)) < 60 else 0
+
+    if key_row["usage_mode"] == "rate_limited":
+        if key_row["daily_limit"] > 0 and used_today >= key_row["daily_limit"]:
+            env, code = api_error(key_row, slug, 429, "Daily limit reached",
+                                  f"daily_limit={key_row['daily_limit']} — resets at midnight IST")
+            return json_out(env, code)
+        if key_row["per_min_limit"] > 0 and minute_used >= key_row["per_min_limit"]:
+            env, code = api_error(key_row, slug, 429, "Per-minute limit reached",
+                                  f"per_min={key_row['per_min_limit']}")
+            return json_out(env, code)
+
+    # ---- upstream
+    payload, dt, err = fetch_upstream(ep, term)
+    if payload is None:
+        env, code = api_error(key_row, slug, 502, "Upstream failure",
+                              err or "unknown upstream error")
+        return json_out(env, code)
+
+    # ---- success path
+    if slug == "tg":
+        payload = normalize_tg(payload, term)
+    core = build_envelope(payload, {**key_row,
+                                    "today_hits": used_today})
+    if slug == "tg":
+        core = reorder_tg(core)
+    hit = register_hit(key_row)
+    envelope = apply_key_style(core, key_row, 200)
+    preview = json.dumps(envelope, ensure_ascii=False)[:600]
+    add_log(key_row, slug, term, 200, True, dt,
+            ("key capped & disabled" if hit["capped"] else "ok"), preview)
+    return json_out(envelope, 200)
+
+# -------------------------------------------------------------- public pages
+@app.route("/")
+def landing():
+    eps = [e for e in all_endpoints() if e["enabled"]]
+    return render_template("terminal.html", endpoints=eps, developer=developer_name())
+
+@app.route("/docs")
+def docs():
+    eps = all_endpoints()
+    return render_template("docs.html", base_url=request.host_url.rstrip("/"),
+                           endpoints=eps, developer=developer_name(),
+                           maintenance=get_setting("maintenance_message", ""))
+
+@app.route("/terminal")
+def terminal_page():
+    return redirect("/")
+
+@app.route("/info")
+def info():
+    hits = 0
+    conn = db()
+    row = conn.execute("SELECT COUNT(*) c FROM logs").fetchone()
+    hits = row["c"]
+    keys = conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"]
+    conn.close()
+    return render_template("info.html", developer=developer_name(), hits=hits, keys=keys)
+
+# ------------------------------------------------------------------  admin
+def _user_allowed(path):
+    """user role in pages ko dekh sakta hai (GET only, actions head-admin hi)."""
+    return (path == "/admin" or path.startswith("/admin/logs")
+            or path.startswith("/admin/analytics") or path.startswith("/admin/endpoints"))
+
+def admin_required(f):
+    """Admin ya user-account — koi bhi logged-in staff; user-role sirf limited pages."""
+    @wraps(f)
+    def w(*a, **kw):
+        if not (session.get("admin_id") or session.get("user_id")):
+            return redirect(url_for("admin_login", next=request.path))
+        if not session.get("admin_id") and not _user_allowed(request.path):
+            flash("Ye section sirf head-admin ke liye hai.", "danger")
+            return redirect(url_for("admin_dashboard"))
+        if not session.get("admin_id") and request.method in ("POST", "PUT", "DELETE"):
+            flash("Read-only account — actions head-admin hi kar sakta hai.", "danger")
+            return redirect(url_for("admin_dashboard"))
+        return f(*a, **kw)
+    return w
+
+def head_required(f):
+    """Sirf head-admin routes (key/settings/users/security + sab mutating actions)."""
+    @wraps(f)
+    def w(*a, **kw):
+        if not (session.get("admin_id") or session.get("user_id")):
+            return redirect(url_for("admin_login", next=request.path))
+        if not session.get("admin_id"):
+            flash("Ye section sirf head-admin ke liye hai.", "danger")
+            return redirect(url_for("admin_dashboard"))
+        return f(*a, **kw)
+    return w
+
+def admin_row():
+    aid = session.get("admin_id")
+    if not aid:
+        return None
+    conn = db()
+    row = conn.execute("SELECT * FROM admins WHERE id=?", (aid,)).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+@app.template_filter("fmt_dt")
+def fmt_dt(v):
+    try:
+        return datetime.strptime(v[:19], "%Y-%m-%d %H:%M:%S").strftime("%d/%m/%Y %I:%M%p").lower()
+    except Exception:
+        return v
+
+@app.template_filter("dt_only")
+def dt_only(v):
+    try:
+        return datetime.strptime(str(v)[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        return str(v)
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if request.method == "POST":
+        u = request.form.get("username", "").strip()
+        p = request.form.get("password", "")
+        conn = db()
+        a = conn.execute("SELECT * FROM admins WHERE username=?", (u,)).fetchone()
+        if not a:
+            a = conn.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone()
+            if a:
+                a = dict(a) | {"is_admin": False}
+        else:
+            a = dict(a) | {"is_admin": True}
+        conn.close()
+        if a and check_password_hash(a["password_hash"], p):
+            if not a["is_admin"] and not a["is_active"]:
+                log_login_attempt(u, "user", "blocked")
+                flash("Account blocked. Admin se contact karo.", "danger")
+                return render_template("login.html")
+            log_login_attempt(u, a["role"] if a["is_admin"] else "user", "success")
+            if a["is_admin"]:
+                session["admin_id"] = a["id"]
+                session["admin_role"] = a["role"]
+                session["admin_name"] = a["username"]
+            else:
+                session["user_id"] = a["id"]
+                session["admin_role"] = "user"
+                session["admin_name"] = a["username"]
+            return redirect(request.args.get("next") or url_for("admin_dashboard"))
+        log_login_attempt(u, ("admin" if a and a["is_admin"] else ("user" if a else "unknown")), "invalid")
+        flash("Invalid username or password.", "danger")
+    return render_template("login.html")
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
+
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
+    conn = db()
+    total = conn.execute("SELECT COUNT(*) c FROM logs").fetchone()["c"]
+    today = conn.execute("SELECT COUNT(*) c FROM logs WHERE created_at LIKE ?", (today_str() + "%",)).fetchone()["c"]
+    keys_total = conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"]
+    keys_live = conn.execute("SELECT COUNT(*) c FROM api_keys WHERE is_active=1 AND (expires_at IS NULL OR expires_at>=?)",
+                             (today_str(),)).fetchone()["c"]
+    eps = all_endpoints()
+    eps_online = len([e for e in eps if e["enabled"]])
+    srow = conn.execute("SELECT COUNT(*) c FROM logs WHERE success=1").fetchone()["c"]
+    rate = round((srow / total) * 100, 1) if total else 0.0
+
+    daily = conn.execute(
+        "SELECT substr(created_at,1,10) d, COUNT(*) c FROM logs GROUP BY d ORDER BY d DESC LIMIT 14"
+    ).fetchall()
+    daily = [{"d": r["d"], "c": r["c"]} for r in reversed(daily)]
+    top = [{"l": r["endpoint"] or "?", "c": r["c"]}
+           for r in conn.execute(
+        "SELECT endpoint, COUNT(*) c FROM logs GROUP BY endpoint ORDER BY c DESC LIMIT 6").fetchall()]
+    recent = conn.execute(
+        "SELECT * FROM logs ORDER BY id DESC LIMIT 10").fetchall()
+    peak = conn.execute(
+        "SELECT d, c FROM (SELECT substr(created_at,1,10) d, COUNT(*) c FROM logs GROUP BY d ORDER BY c DESC LIMIT 1)"
+    ).fetchone()
+    ep_rows = conn.execute(
+        "SELECT endpoint ep, COUNT(*) c, SUM(success) ok, AVG(response_time) ms FROM logs GROUP BY endpoint"
+    ).fetchall()
+    ep_stats = {r["ep"] or "?": {"c": r["c"], "ok": r["ok"] or 0,
+                                 "ms": round(r["ms"] or 0)} for r in ep_rows}
+    avg_ms_row = conn.execute("SELECT AVG(response_time) m FROM logs").fetchone()
+    conn.close()
+    return render_template("dashboard.html", total=total, today=today,
+                           keys_total=keys_total, keys_live=keys_live,
+                           eps=eps, eps_online=eps_online, rate=rate,
+                           daily=daily, top=top, recent=recent,
+                           ep_stats=ep_stats, avg_ms=round(avg_ms_row["m"] or 0),
+                           peak=peak["c"] if peak else 0,
+                           maintenance=get_setting("maintenance_message", ""),
+                           uptime=_uptime(), admin=admin_row())
+
+def _boot_time():
+    global _BOOT
+    return _BOOT
+
+_BOOT = datetime.now()
+
+def _uptime():
+    d = datetime.now() - _BOOT
+    h, m = d.seconds // 3600, (d.seconds % 3600) // 60
+    days = d.days
+    parts = []
+    if days: parts.append(f"{days}d")
+    if h: parts.append(f"{h}h")
+    parts.append(f"{m}m")
+    return " ".join(parts)
+
+@app.route("/admin/keys")
+@admin_required
+def admin_keys():
+    status = request.args.get("status", "all")
+    q = request.args.get("q", "").strip()
+    sql = "SELECT * FROM api_keys WHERE 1=1"
+    args = []
+    today = today_str()
+    if status == "live":
+        sql += " AND is_active=1 AND (expires_at IS NULL OR expires_at>=?)"
+        args.append(today)
+    elif status == "expired":
+        sql += " AND expires_at IS NOT NULL AND expires_at<?"
+        args.append(today)
+    elif status == "off":
+        sql += " AND is_active=0"
+    if q:
+        sql += " AND (key LIKE ? OR client LIKE ? OR note LIKE ?)"
+        args += [f"%{q}%"] * 3
+    sql += " ORDER BY id DESC"
+    conn = db()
+    keys = conn.execute(sql, args).fetchall()
+    eps = all_endpoints()
+    conn.close()
+    return render_template("keys.html", keys=keys, eps=eps, status=status, q=q,
+                           today=today_str(), admin=admin_row())
+
+@app.route("/admin/keys/create", methods=["POST"])
+@admin_required
+def keys_create():
+    f = request.form
+    kv = (f.get("key", "").strip() if f.get("custom_toggle") == "on" else "") \
+         or secrets.token_hex(8)
+    if get_key_raw(kv):
+        flash(f"Key '{kv}' already exists.", "danger")
+        return redirect(url_for("admin_keys"))
+    access = "all"
+    if f.get("access_mode") == "single" and f.get("single_ep"):
+        access = f.get("single_ep")
+    elif f.get("access_mode") == "multiple":
+        chosen = ",".join(request.form.getlist("eps"))
+        access = chosen if chosen else "all"
+    usage = f.get("usage_mode", "unlimited")
+    daily = int(f.get("daily_limit") or 0)
+    permin = int(f.get("per_min_limit") or 0)
+    cap = int(f.get("total_cap") or 0)
+    validity = f.get("validity", "lifetime")
+    expires = f"{today_str()}+{validity}"
+    expires = None
+    if validity == "custom":
+        expires = f.get("custom_date") or None
+    elif validity != "lifetime":
+        expires = (datetime.now() + timedelta(days=int(validity))).strftime("%Y-%m-%d")
+    conn = db()
+    conn.execute(
+        "INSERT INTO api_keys(key,client,note,allowed,usage_mode,daily_limit,per_min_limit,total_cap,"
+        "is_active,expires_at,style_developer,style_template,created_at) VALUES(?,?,?,?,?,?,?,?,1,?,?,?,?)",
+        (kv, f.get("client", "").strip(), f.get("note", "").strip(), access, usage, daily, permin, cap,
+         expires, f.get("style_developer", "").strip(), f.get("style_template", "").strip(), now_iso()))
+    conn.commit(); conn.close()
+    flash(f"Key created: {kv}", "success")
+    return redirect(url_for("admin_keys"))
+
+@app.route("/admin/keys/<int:kid>/update", methods=["POST"])
+@admin_required
+def keys_update(kid):
+    f = request.form
+    access = "all"
+    if f.get("access_mode") == "single" and f.get("single_ep"):
+        access = f.get("single_ep")
+    elif f.get("access_mode") == "multiple":
+        chosen = ",".join(request.form.getlist("eps"))
+        access = chosen if chosen else "all"
+    expires = None
+    validity = f.get("validity", "lifetime")
+    if validity == "custom":
+        expires = f.get("custom_date") or None
+    elif validity != "lifetime":
+        expires = (datetime.now() + timedelta(days=int(validity))).strftime("%Y-%m-%d")
+    conn = db()
+    conn.execute(
+        "UPDATE api_keys SET client=?, note=?, allowed=?, usage_mode=?, daily_limit=?, per_min_limit=?, "
+        "total_cap=?, expires_at=?, style_developer=?, style_template=? WHERE id=?",
+        (f.get("client", "").strip(), f.get("note", "").strip(), access,
+         f.get("usage_mode", "unlimited"), int(f.get("daily_limit") or 0),
+         int(f.get("per_min_limit") or 0), int(f.get("total_cap") or 0),
+         expires, f.get("style_developer", "").strip(), f.get("style_template", "").strip(), kid))
+    conn.commit(); conn.close()
+    flash("Key updated.", "success")
+    return redirect(request.form.get("back") or url_for("admin_keys"))
+
+def _key_action(kid, sql_single, args=()):
+    conn = db()
+    conn.execute(sql_single, (*args, kid))
+    conn.commit(); conn.close()
+
+@app.route("/admin/keys/<int:kid>/toggle", methods=["POST"])
+@admin_required
+def key_toggle(kid):
+    _key_action(kid, "UPDATE api_keys SET is_active = CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=?")
+    return jsonify(ok=True)
+
+@app.route("/admin/keys/<int:kid>/reset", methods=["POST"])
+@admin_required
+def key_reset(kid):
+    conn = db()
+    conn.execute(
+        "UPDATE api_keys SET total_hits=0, today_hits=0, today_date='', minute_hits=0, minute_start=0, "
+        "is_active=1 WHERE id=?", (kid,))
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+@app.route("/admin/keys/<int:kid>/extend", methods=["POST"])
+@admin_required
+def key_extend(kid):
+    days = int(request.form.get("days") or 30)
+    conn = db()
+    row = conn.execute("SELECT expires_at FROM api_keys WHERE id=?", (kid,)).fetchone()
+    base = None
+    if row and row["expires_at"]:
+        try:
+            base = datetime.strptime(row["expires_at"][:10], "%Y-%m-%d")
+        except Exception:
+            base = None
+    if not base or base < datetime.now():
+        base = datetime.now()
+    conn.execute("UPDATE api_keys SET expires_at=?, is_active=1 WHERE id=?",
+                 ((base + timedelta(days=days)).strftime("%Y-%m-%d"), kid))
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+@app.route("/admin/keys/<int:kid>/delete", methods=["POST"])
+@admin_required
+def key_delete(kid):
+    conn = db()
+    conn.execute("DELETE FROM api_keys WHERE id=?", (kid,))
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+@app.route("/admin/keys/bulk", methods=["POST"])
+@admin_required
+def keys_bulk():
+    action = request.form.get("bulk_action")
+    ids = [int(i) for i in request.form.getlist("ids") if str(i).isdigit()]
+    if not ids:
+        return jsonify(ok=False, error="no keys selected"), 400
+    conn = db()
+    marks = ",".join("?" * len(ids))
+    if action == "enable":
+        conn.execute(f"UPDATE api_keys SET is_active=1 WHERE id IN ({marks})", ids)
+    elif action == "disable":
+        conn.execute(f"UPDATE api_keys SET is_active=0 WHERE id IN ({marks})", ids)
+    elif action == "activate":
+        conn.execute(f"UPDATE api_keys SET is_active=1, expires_at=NULL WHERE id IN ({marks})", ids)
+    elif action == "reset":
+        conn.execute(f"UPDATE api_keys SET total_hits=0, today_hits=0, today_date='', minute_hits=0, "
+                     f"minute_start=0, is_active=1 WHERE id IN ({marks})", ids)
+    elif action == "extend":
+        piece = ",".join("id=?" and "?" for _ in [])  # silence
+        for kid in ids:
+            row = conn.execute("SELECT expires_at FROM api_keys WHERE id=?", (kid,)).fetchone()
+            base = datetime.now()
+            if row and row["expires_at"]:
+                try:
+                    e = datetime.strptime(row["expires_at"][:10], "%Y-%m-%d")
+                    if e > base: base = e
+                except Exception:
+                    pass
+            conn.execute("UPDATE api_keys SET expires_at=?, is_active=1 WHERE id=?",
+                         ((base + timedelta(days=30)).strftime("%Y-%m-%d"), kid))
+    elif action == "delete":
+        conn.execute(f"DELETE FROM api_keys WHERE id IN ({marks})", ids)
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+@app.route("/admin/keys/<int:kid>")
+@admin_required
+def key_detail(kid):
+    conn = db()
+    k = conn.execute("SELECT * FROM api_keys WHERE id=?", (kid,)).fetchone()
+    if not k:
+        conn.close(); return redirect(url_for("admin_keys"))
+    logs = conn.execute("SELECT * FROM logs WHERE key_id=? ORDER BY id DESC LIMIT 200", (kid,)).fetchall()
+    conn.close()
+    endpoints = {e["slug"]: e for e in all_endpoints()}
+    return render_template("key_detail.html", k=k, logs=logs, endpoints=endpoints, admin=admin_row())
+
+# ------------------------------------------------------------- endpoint admin
+@app.route("/admin/endpoints")
+@admin_required
+def admin_endpoints():
+    eps = all_endpoints()
+    return render_template("endpoints.html", eps=eps, admin=admin_row())
+
+@app.route("/admin/endpoints/create", methods=["POST"])
+@admin_required
+def ep_create():
+    f = request.form
+    slug = (f.get("slug") or "").strip().lower().replace(" ", "")
+    if not slug or get_endpoint(slug):
+        flash("Endpoint slug missing or already exists.", "danger")
+        return redirect(url_for("admin_endpoints"))
+    conn = db()
+    conn.execute("INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+                 " VALUES(?,?,?,?,?,?,?,?)",
+                 (slug, f.get("name") or slug, f.get("emoji") or "🔌",
+                  f.get("url_template") or "", f.get("upstream_key") or "",
+                  f.get("term_param") or "term", 500, now_iso()))
+    conn.commit(); conn.close()
+    flash(f"Endpoint /api/{slug} created.", "success")
+    return redirect(url_for("admin_endpoints"))
+
+@app.route("/admin/endpoints/<int:eid>/update", methods=["POST"])
+@admin_required
+def ep_update(eid):
+    f = request.form
+    conn = db()
+    conn.execute("UPDATE endpoints SET name=?, emoji=?, url_template=?, upstream_key=? WHERE id=?",
+                 (f.get("name"), f.get("emoji"), f.get("url_template"),
+                  f.get("upstream_key"), eid))
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+@app.route("/admin/endpoints/<int:eid>/toggle", methods=["POST"])
+@admin_required
+def ep_toggle(eid):
+    conn = db()
+    conn.execute("UPDATE endpoints SET enabled = CASE WHEN enabled=1 THEN 0 ELSE 1 END WHERE id=?", (eid,))
+    conn.commit()
+    row = conn.execute("SELECT enabled FROM endpoints WHERE id=?", (eid,)).fetchone()
+    conn.close()
+    return jsonify(ok=True, enabled=bool(row["enabled"]) if row else None)
+
+@app.route("/admin/endpoints/<int:eid>/delete", methods=["POST"])
+@admin_required
+def ep_delete(eid):
+    conn = db()
+    conn.execute("DELETE FROM endpoints WHERE id=?", (eid,))
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+@app.route("/admin/endpoints/<int:eid>/test", methods=["POST"])
+@admin_required
+def ep_test(eid):
+    conn = db()
+    ep = conn.execute("SELECT * FROM endpoints WHERE id=?", (eid,)).fetchone()
+    conn.close()
+    if not ep:
+        return jsonify(ok=False, error="not found")
+    term = request.form.get("term") or "1"
+    payload, dt, err = fetch_upstream(ep, term)
+    if payload is None:
+        return jsonify(ok=False, ms=dt, error=err)
+    return jsonify(ok=True, ms=dt, preview=json.dumps(payload, ensure_ascii=False)[:800])
+
+@app.route("/admin/endpoints/bulk", methods=["POST"])
+@admin_required
+def ep_bulk():
+    action = request.form.get("bulk_action")
+    conn = db()
+    if action == "enable_all":
+        conn.execute("UPDATE endpoints SET enabled=1")
+    elif action == "disable_all":
+        conn.execute("UPDATE endpoints SET enabled=0")
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+# ---------------------------------------------------------------- logs admin
+@app.route("/admin/logs")
+@admin_required
+def admin_logs():
+    q = request.args.get("q", "").strip()
+    ep = request.args.get("ep", "")
+    status = request.args.get("status", "")   # ok | fail
+    date = request.args.get("date", "")
+    sql = "SELECT * FROM logs WHERE 1=1"
+    args = []
+    if q:
+        sql += " AND (term LIKE ? OR key_string LIKE ? OR key_id LIKE ?)"
+        args += [f"%{q}%"] * 3
+    if ep:
+        sql += " AND endpoint=?"
+        args.append(ep)
+    if status == "ok":
+        sql += " AND success=1"
+    elif status == "fail":
+        sql += " AND success=0"
+    if date:
+        sql += " AND substr(created_at,1,10)=?"
+        args.append(date)
+    sql += " ORDER BY id DESC LIMIT 400"
+    conn = db()
+    logs = conn.execute(sql, args).fetchall()
+    eps = all_endpoints()
+    conn.close()
+    return render_template("logs.html", logs=logs, eps=eps, q=q, ep=ep, status=status, date=date,
+                           admin=admin_row())
+
+@app.route("/admin/logs/<int:lid>")
+@admin_required
+def log_detail(lid):
+    conn = db()
+    row = conn.execute("SELECT * FROM logs WHERE id=?", (lid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify(ok=False), 404
+    return jsonify(ok=True, log=dict(row))
+
+@app.route("/admin/logs/clear", methods=["POST"])
+@admin_required
+def logs_clear():
+    conn = db()
+    conn.execute("DELETE FROM logs")
+    conn.commit(); conn.close()
+    return jsonify(ok=True)
+
+@app.route("/admin/analytics")
+@admin_required
+def admin_analytics():
+    conn = db()
+    daily = [{'d': r['d'], 'c': r['c']} for r in reversed(conn.execute(
+        "SELECT substr(created_at,1,10) d, COUNT(*) c FROM logs GROUP BY d ORDER BY d DESC LIMIT 21").fetchall())]
+    top_eps = [{'l': r['endpoint'] or '?', 'c': r['c']} for r in conn.execute(
+        "SELECT endpoint, COUNT(*) c FROM logs GROUP BY endpoint ORDER BY c DESC LIMIT 8").fetchall()]
+    top_keys = [{'k': r['key_string'], 'kid': r['key_id'], 'c': r['c']} for r in conn.execute(
+        "SELECT l.key_string, l.key_id, COUNT(*) c FROM logs l GROUP BY l.key_string ORDER BY c DESC LIMIT 10"
+    ).fetchall()]
+    total = conn.execute("SELECT COUNT(*) c FROM logs").fetchone()["c"] or 0
+    ok = conn.execute("SELECT COUNT(*) c FROM logs WHERE success=1").fetchone()["c"]
+    avg = conn.execute("SELECT ROUND(AVG(response_time),1) a FROM logs WHERE success=1").fetchone()["a"]
+    conn.close()
+    rate = round((ok / total) * 100, 1) if total else 0.0
+    return render_template("analytics.html", daily=daily, top_eps=top_eps, top_keys=top_keys,
+                           total=total, rate=rate, avg=avg or 0, admin=admin_row())
+
+@app.route("/admin/security")
+@admin_required
+def admin_security():
+    conn = db()
+    attempts = conn.execute("SELECT * FROM login_attempts ORDER BY id DESC LIMIT 300").fetchall()
+    failed = conn.execute("SELECT COUNT(*) c FROM login_attempts WHERE status='invalid'").fetchone()["c"]
+    ok = conn.execute("SELECT COUNT(*) c FROM login_attempts WHERE status='success'").fetchone()["c"]
+    conn.close()
+    return render_template("security.html", attempts=attempts, failed=failed, ok=ok, admin=admin_row())
+
+@app.route("/admin/settings", methods=["GET", "POST"])
+@admin_required
+def admin_settings():
+    if request.method == "POST":
+        what = request.form.get("what")
+        if what == "brand":
+            set_setting("developer", (request.form.get("developer") or "").strip())
+            set_setting("maintenance_message", (request.form.get("maintenance_message") or "").strip())
+            flash("Settings saved.", "success")
+        elif what == "password":
+            cur = request.form.get("current_password", "")
+            new = request.form.get("new_password", "")
+            a = admin_row()
+            if not a or not check_password_hash(a["password_hash"], cur):
+                flash("Current password wrong.", "danger")
+            elif len(new) < 6:
+                flash("New password too short (min 6).", "danger")
+            else:
+                conn = db()
+                conn.execute("UPDATE admins SET password_hash=? WHERE id=?",
+                             (generate_password_hash(new), a["id"]))
+                conn.commit(); conn.close()
+                flash("Password changed.", "success")
+        return redirect(url_for("admin_settings"))
+    return render_template("settings.html", developer=developer_name(),
+                           maintenance=get_setting("maintenance_message", ""), admin=admin_row())
+
+# ------------------------------------------------------------------ user accounts
+@app.route("/admin/users")
+@admin_required
+def admin_users():
+    if not session.get("admin_id"):
+        flash("Ye section sirf head-admin ke liye hai.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    conn = db()
+    users = conn.execute("SELECT * FROM users ORDER BY id DESC").fetchall()
+    conn.close()
+    return render_template("users.html", users=users, admin=admin_row())
+
+@app.route("/admin/users/create", methods=["POST"])
+@admin_required
+def admin_users_create():
+    if not session.get("admin_id"):
+        flash("Sirf head-admin allowed.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    u = (request.form.get("username") or "").strip()
+    p = request.form.get("password") or ""
+    if not u or not p:
+        flash("Username aur password dono required.", "danger")
+        return redirect(url_for("admin_users"))
+    if len(p) < 6:
+        flash("Password min 6 characters.", "danger")
+        return redirect(url_for("admin_users"))
+    conn = db()
+    exists = conn.execute("SELECT 1 x FROM users WHERE username=? UNION SELECT 1 FROM admins WHERE username=?",
+                          (u, u)).fetchone()
+    if exists:
+        conn.close()
+        flash("Ye username already exist karta hai.", "danger")
+        return redirect(url_for("admin_users"))
+    conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)",
+                 (u, generate_password_hash(p), now_iso()))
+    conn.commit(); conn.close()
+    flash(f"User '{u}' created ✅ — username + password share kar do.", "success")
+    return redirect(url_for("admin_users"))
+
+@app.route("/admin/users/<int:uid>/reset", methods=["POST"])
+@admin_required
+def admin_users_reset(uid):
+    if not session.get("admin_id"):
+        flash("Sirf head-admin allowed.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    p = request.form.get("password") or ""
+    if len(p) < 6:
+        flash("New password min 6 characters.", "danger")
+        return redirect(url_for("admin_users"))
+    conn = db()
+    conn.execute("UPDATE users SET password_hash=? WHERE id=?", (generate_password_hash(p), uid))
+    conn.commit(); conn.close()
+    flash("Password reset ✅", "success")
+    return redirect(url_for("admin_users"))
+
+@app.route("/admin/users/<int:uid>/toggle", methods=["POST"])
+@admin_required
+def admin_users_toggle(uid):
+    if not session.get("admin_id"):
+        flash("Sirf head-admin allowed.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    conn = db()
+    row = conn.execute("SELECT is_active FROM users WHERE id=?", (uid,)).fetchone()
+    if row:
+        conn.execute("UPDATE users SET is_active=? WHERE id=?", (0 if row["is_active"] else 1, uid))
+        conn.commit()
+    conn.close()
+    flash("User unblock/block kar diya ✅", "success")
+    return redirect(url_for("admin_users"))
+
+@app.route("/admin/users/<int:uid>/delete", methods=["POST"])
+@admin_required
+def admin_users_delete(uid):
+    if not session.get("admin_id"):
+        flash("Sirf head-admin allowed.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    conn = db()
+    conn.execute("DELETE FROM users WHERE id=?", (uid,))
+    conn.commit(); conn.close()
+    flash("User deleted.", "success")
+    return redirect(url_for("admin_users"))
+
+# -------------------------------------------------------------------- boot
+init_db()
+
+if __name__ == "__main__":
+    print(f"AURA OSINT HUB -> http://127.0.0.1:{PORT}   (login: /admin/login)", flush=True)
+    app.run(host=HOST, port=PORT, debug=False)

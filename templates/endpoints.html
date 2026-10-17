@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Endpoints{% endblock %}
+{% block topbar_title %}Endpoint control{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:16px">
+  <div>
+    <h2 style="font-size:24px">🔌 Endpoint control</h2>
+    <div class="sub">Global switches — affect every key</div>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:10px">
+    <form onsubmit="epBulk(event,'enable_all')"><button class="btn btn-green btn-sm">✅ Enable all</button></form>
+    <form onsubmit="epBulk(event,'disable_all')"><button class="btn btn-danger btn-sm">⛔ Disable all</button></form>
+    <button class="btn btn-prime" onclick="openModalId('m-epnew')">＋ Add endpoint</button>
+  </div>
+</div>
+
+<div class="ep-grid">
+  {% for e in eps %}
+  <div class="ep-card">
+    <div class="ep-head">
+      <div>
+        <h4>{{ e.emoji }} {{ e.name }}</h4>
+        <div class="ep-slug mono">/api/{{ e.slug }}</div>
+      </div>
+      <div class="sw {{ 'on' if e.enabled }}" data-url="/admin/endpoints/{{ e.id }}/toggle" title="Global switch"></div>
+    </div>
+    <div>
+      {% if e.enabled %}<span class="badge b-green"><i></i>Live</span>
+      {% else %}<span class="badge b-red"><i></i>Off</span>
+      {% endif %}
+      {% if e.upstream_key %}<span class="chip">key set</span>{% else %}<span class="chip b-amber">no key</span>{% endif %}
+    </div>
+    <div class="ep-actions">
+      <button class="btn btn-sm" data-ep-test="/admin/endpoints/{{ e.id }}/test" data-term="1" style="min-width:56px;justify-content:center">Test</button>
+      <button class="btn btn-sm" data-ep-edit data-url="/admin/endpoints/{{ e.id }}/update"
+        data-name="{{ e.name }}" data-emoji="{{ e.emoji }}" data-tpl="{{ e.url_template }}" data-ekey="{{ e.upstream_key }}">✏️ Edit</button>
+      <button class="btn btn-sm btn-danger" onclick="epDelete({{ e.id }})">🗑</button>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- add endpoint -->
+<div class="modal-bg" id="m-epnew">
+  <div class="modal">
+    <form action="/admin/endpoints/create" method="POST">
+      <div class="modal-head"><h3><span class="em">🔌</span> Add endpoint</h3><button type="button" class="modal-x" data-close-modal>✕</button></div>
+      <div class="modal-body">
+        <div style="display:grid;grid-template-columns:80px 1fr;gap:12px">
+          <div><label class="label">Emoji</label><input type="text" name="emoji" value="🔌"></div>
+          <div><label class="label">Name</label><input type="text" name="name" placeholder="Bank IFSC" required></div>
+        </div>
+        <label class="label">Slug (URL path)</label>
+        <input type="text" name="slug" placeholder="ifsc" required class="mono" style="direction:ltr">
+        <label class="label">Upstream URL template</label>
+        <textarea name="url_template" rows="3" placeholder="https://site.com/api?key={upstream_key}&code={term}" style="direction:ltr"></textarea>
+        <label class="label">Upstream key</label>
+        <input type="text" name="upstream_key" class="mono" style="direction:ltr">
+        <p class="sub" style="margin-top:10px">Placeholders: <code>{upstream_key}</code> aur <code>{term}</code></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal>Cancel</button>
+        <button type="submit" class="btn btn-prime">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- edit endpoint -->
+<div class="modal-bg" id="m-epedit">
+  <div class="modal">
+    <form action="" method="POST">
+      <div class="modal-head"><h3><span class="em">✏️</span> Edit endpoint</h3><button type="button" class="modal-x" data-close-modal>✕</button></div>
+      <div class="modal-body">
+        <div style="display:grid;grid-template-columns:80px 1fr;gap:12px">
+          <div><label class="label">Emoji</label><input type="text" name="emoji"></div>
+          <div><label class="label">Name</label><input type="text" name="name"></div>
+        </div>
+        <label class="label">Upstream URL template</label>
+        <textarea name="url_template" rows="3" style="direction:ltr"></textarea>
+        <label class="label">Upstream key</label>
+        <input type="text" name="upstream_key" class="mono" style="direction:ltr">
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal>Cancel</button>
+        <button type="submit" class="btn btn-prime">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>.content .filters{margin-bottom:0}</style>
+{% endblock %}
+{% block scripts %}
+<script>
+async function epBulk(ev, action){
+  ev.preventDefault();
+  await post('/admin/endpoints/bulk', {bulk_action: action});
+  toast(action==='enable_all'?'All endpoints online':'All endpoints offline');
+  setTimeout(()=>location.reload(),400);
+}
+async function epDelete(id){
+  if(!confirm('Delete this endpoint?')) return;
+  await post(`/admin/endpoints/${id}/delete`, {_t:1});
+  toast('Endpoint deleted.'); setTimeout(()=>location.reload(),350);
+}
+</script>
+{% endblock %}

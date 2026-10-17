@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Search Logs{% endblock %}
+{% block topbar_title %}Search logs{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:16px">
+  <div>
+    <h2 style="font-size:24px">🗂️ Search logs</h2>
+    <div class="sub">{{ logs|length }} rows shown (latest first)</div>
+  </div>
+  <div style="margin-left:auto">
+    <button class="btn btn-danger" onclick="clearLogs()">🗑 Clear all logs</button>
+  </div>
+</div>
+
+<div class="card card-pad" style="margin-bottom:16px">
+  <form method="GET" class="filters">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search term / key / key id…">
+    <select name="ep">
+      <option value="">All endpoints</option>
+      {% for e in eps %}<option value="{{ e.slug }}" {{ 'selected' if ep==e.slug }}>{{ e.name }} ({{ e.slug }})</option>{% endfor %}
+    </select>
+    <select name="status">
+      <option value="">All status</option>
+      <option value="ok" {{ 'selected' if status=='ok' }}>✅ OK only</option>
+      <option value="fail" {{ 'selected' if status=='fail' }}>⚠️ Failed only</option>
+    </select>
+    <input type="date" name="date" value="{{ date }}" style="width:auto">
+    <button class="btn btn-prime">Apply</button>
+    <a class="btn" href="/admin/logs">Clear</a>
+  </form>
+</div>
+
+<div class="card">
+  <div class="tbl-box">
+    <table class="tbl">
+      <thead><tr><th>STATUS</th><th>ENDPOINT</th><th>KEY</th><th>TERM</th><th>MS</th><th>IP</th><th>WHEN</th><th>NAV</th></tr></thead>
+      <tbody>
+      {% for l in logs %}
+      <tr data-log="{{ l.id }}" style="cursor:pointer">
+        <td><span class="badge {{ 'b-green' if l.success else 'b-red' }}">{{ l.status_code }}</span></td>
+        <td class="mono">{% set endp = l.endpoint %}{% for e in eps if e.slug==endp %}{{ e.emoji }}{% endfor %} {{ endp }}</td>
+        <td class="mono">{{ l.key_string }}</td>
+        <td class="mono">{{ l.term or '-' }}</td>
+        <td>{{ l.response_time }}</td>
+        <td class="mono small">{{ l.ip }}</td>
+        <td class="small muted">{{ l.created_at|fmt_dt }}</td>
+        <td>📄</td>
+      </tr>
+      {% endfor %}
+      {% if not logs %}<tr><td colspan="8"><div class="empty"><span class="em">🗂️</span>No logs matched the filters.</div></td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function clearLogs(){
+  if(!confirm('Delete ALL logs? This cannot be undone.')) return;
+  await post('/admin/logs/clear', {_t:1});
+  toast('Logs cleared.'); setTimeout(()=>location.reload(),350);
+}
+</script>
+{% endblock %}

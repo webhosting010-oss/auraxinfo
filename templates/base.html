@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Admin{% endblock %} · {{ developer }} · OSINT HUB</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>body{opacity:0}body.ready{opacity:1;transition:opacity .3s}</style>
+<script>document.body||document.write('');window.addEventListener('DOMContentLoaded',()=>document.body.classList.add('ready'));</script>
+</head>
+<body>
+<div class="overlay" id="overlay"></div>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="side-head">
+      <div class="logo-ic">⚡</div>
+      <div>
+        <b class="mono">OSINT HUB</b>
+        <small>CONTROL PANEL</small>
+      </div>
+    </div>
+    {% set EP = request.endpoint %}
+    <nav class="side-nav">
+      <div class="side-label">MAIN</div>
+      <a class="side-link {{ 'active' if EP=='admin_dashboard' }}" href="/admin"><span class="em">⚡</span>Dashboard</a>
+      <a class="side-link {{ 'active' if EP=='admin_keys' or EP=='keys_create' or EP=='key_detail' }}" {% if not session.get('admin_id') %}style="pointer-events:none;opacity:.35" title="head-admin only"{% endif %} href="/admin/keys"><span class="em">🔑</span>API Keys</a>
+      <a class="side-link {{ 'active' if EP=='admin_logs' }}" href="/admin/logs"><span class="em">🗂️</span>Search Logs</a>
+      <a class="side-link {{ 'active' if EP=='admin_analytics' }}" href="/admin/analytics"><span class="em">📈</span>Analytics</a>
+      <div class="side-label">SYSTEM</div>
+      <a class="side-link {{ 'active' if EP=='admin_endpoints' }}" href="/admin/endpoints"><span class="em">🔌</span>Endpoints</a>
+      {% if session.get('admin_id') %}
+      <a class="side-link {{ 'active' if EP=='admin_security' }}" href="/admin/security"><span class="em">🛡️</span>Security</a>
+      <a class="side-link {{ 'active' if EP=='admin_users' or EP=='admin_users_create' }}" href="/admin/users"><span class="em">👤</span>Users</a>
+      <a class="side-link {{ 'active' if EP=='admin_settings' }}" href="/admin/settings"><span class="em">⚙️</span>Settings</a>
+      {% endif %}
+      <div class="side-label">LIVE API</div>
+      <a class="side-link" href="/docs" target="_blank"><span class="em">📘</span>/docs</a>
+      <a class="side-link" href="/terminal" target="_blank"><span class="em">⌨️</span>/terminal</a>
+      <a class="side-link" href="/info" target="_blank"><span class="em">ℹ️</span>/info</a>
+      <a class="side-link" href="/" target="_blank"><span class="em">🌍</span>Live site</a>
+    </nav>
+    <div class="side-foot mono">
+      <i></i> LIVE&nbsp;&nbsp;{{ developer }}
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="menu-btn" id="menuBtn">☰</button>
+      <h1>{% block topbar_title %}{% endblock %}</h1>
+      <div class="who">
+        <span class="admin-chip"><i></i> <b>{{ admin.username if admin else session.get('admin_name', 'user') }}</b>
+          <small>{{ 'HEAD ADMIN' if session.get('admin_id') else 'USER' }}</small></span>
+        <a class="btn btn-icon" href="/admin/logout" title="Logout">⏏</a>
+      </div>
+    </header>
+
+    <main class="content">
+      {% with msgs = get_flashed_messages(with_categories=true) %}
+        {% for cat, m in msgs %}
+        <div class="flash f-{{ cat }}">{{ m }}<span class="x">✕</span></div>
+        {% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+      <div class="pagefoot mono">OSINT HUB · {{ developer }}</div>
+    </main>
+  </div>
+</div>
+
+<!-- universal modals -->
+<div class="modal-bg" id="m-preview">
+  <div class="modal wide">
+    <div class="modal-head"><h3><span class="em">📄</span><span class="prev-title">Preview</span></h3>
+      <button class="modal-x" data-close-modal>✕</button></div>
+    <div class="modal-body"><pre class="code-block" style="white-space:pre-wrap">{{ '' }}</pre></div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

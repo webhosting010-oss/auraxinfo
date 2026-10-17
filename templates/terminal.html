@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ developer }} — whoami</title>
+<link rel="preload" href="{{ url_for('static', filename='fonts/JetBrainsMono.woff2') }}" as="font" type="font/woff2" crossorigin>
+<style>
+  @font-face {
+    font-family: 'JetBrains Mono';
+    font-style: normal;
+    font-weight: 100 900;
+    font-display: swap;
+    src: url("{{ url_for('static', filename='fonts/JetBrainsMono.woff2') }}") format('woff2');
+  }
+  :root{
+    --bg:#0a0e13;
+    --panel:#10161d;
+    --panel-2:#0d1319;
+    --border:#1e2731;
+    --text:#c9d3dc;
+    --dim:#5f6b78;
+    --green:#7ee787;
+    --green-dim:rgba(126,231,135,.15);
+    --cyan:#63e6d4;
+    --cyan-dim:rgba(99,230,212,.14);
+    --amber:#ffb454;
+    --rose:#ff6b6b;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(126,231,135,0.05), transparent 45%),
+      radial-gradient(circle at 80% 90%, rgba(99,230,212,0.04), transparent 45%);
+    color:var(--text);
+    font-family:'JetBrains Mono', Consolas, monospace;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:32px 16px;
+    position:relative;
+    overflow-x:hidden;
+  }
+  body::before{
+    content:"";
+    position:fixed;
+    inset:0;
+    pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,0.012) 0px,
+      rgba(255,255,255,0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index:5;
+  }
+  .term{
+    width:100%;
+    max-width:620px;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:10px;
+    box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 20px 60px rgba(0,0,0,.55), 0 0 80px rgba(126,231,135,.06);
+    overflow:hidden;
+  }
+  .titlebar{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:10px 14px;
+    background:var(--panel-2);
+    border-bottom:1px solid var(--border);
+  }
+  .dot{width:11px;height:11px;border-radius:50%;}
+  .dot.r{background:#ff5f56;box-shadow:0 0 8px #ff5f56}
+  .dot.y{background:#ffbd2e;box-shadow:0 0 8px #ffbd2e}
+  .dot.g{background:#27c93f;box-shadow:0 0 8px #27c93f}
+  .titlebar span{
+    margin-left:10px;
+    color:var(--dim);
+    font-size:12.5px;
+    letter-spacing:.02em;
+    font-weight:700;
+  }
+  .body{
+    padding:26px 24px 30px;
+    font-size:14px;
+    line-height:1.75;
+  }
+  .prompt{color:var(--dim);}
+  .prompt .user{color:var(--green);}
+  .prompt .at{color:var(--dim);}
+  .prompt .host{color:var(--cyan);}
+  .prompt .path{color:var(--amber);}
+  .cmd{color:var(--text);}
+  .line{white-space:pre-wrap;word-break:break-word;}
+  .block{margin-bottom:22px;}
+  .k{color:var(--dim);}
+  .v{color:var(--text);font-weight:500;}
+  .v.accent{color:var(--green);}
+  .name-line{
+    font-size:20px;
+    font-weight:800;
+    color:var(--green);
+    letter-spacing:.02em;
+    text-shadow:0 0 18px rgba(126,231,135,.35);
+  }
+  .role-tags{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-top:10px;
+  }
+  .tag{
+    border:1px solid rgba(126,231,135,.3);
+    background:var(--green-dim);
+    color:var(--green);
+    font-size:12px;
+    padding:5px 11px;
+    border-radius:7px;
+    font-weight:700;
+    letter-spacing:.01em;
+  }
+  .status{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    color:var(--green);
+    font-size:12.5px;
+    margin-top:4px;
+  }
+  .status::before{
+    content:"";
+    width:7px;height:7px;
+    border-radius:50%;
+    background:var(--green);
+    box-shadow:0 0 8px var(--green);
+    animation:pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse{
+    0%,100%{opacity:1;}50%{opacity:0.35;}
+  }
+  .links{margin-top:6px;}
+  .link-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:12px;
+    padding:9px 12px;
+    margin-top:6px;
+    border:1px solid var(--border);
+    border-radius:6px;
+    text-decoration:none;
+    color:var(--text);
+    background:rgba(255,255,255,0.015);
+    transition:border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+    font-size:13px;
+  }
+  .link-row:hover{
+    border-color:var(--cyan);
+    background:rgba(99,230,212,0.05);
+    transform:translateX(2px);
+  }
+  .link-row .lk{color:var(--dim);}
+  .link-row .lv{color:var(--cyan);}
+  .link-row .arrow{color:var(--dim);}
+  .link-row:hover .arrow{color:var(--green);}
+  .footer{
+    margin-top:26px;
+    color:var(--dim);
+    font-size:12.5px;
+  }
+  .cursor{
+    display:inline-block;
+    width:8px;height:15px;
+    background:var(--cyan);
+    margin-left:4px;
+    vertical-align:middle;
+    animation:blink 1s step-start infinite;
+  }
+  @keyframes blink{50%{opacity:0;}}
+  .divider{
+    border:none;
+    border-top:1px dashed var(--border);
+    margin:20px 0;
+  }
+  @media (max-width:480px){
+    .body{padding:20px 16px 26px; font-size:13px;}
+    .name-line{font-size:17px;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .status::before, .cursor{animation:none;}
+  }
+</style>
+</head>
+<body>
+  <div class="term">
+    <div class="titlebar">
+      <div class="dot r"></div>
+      <div class="dot y"></div>
+      <div class="dot g"></div>
+      <span>about.sh — {{ developer }}</span>
+    </div>
+    <div class="body">
+
+      <div class="block">
+        <div class="line prompt"><span class="user">aura</span><span class="at">@</span><span class="host">hub</span><span class="path">:~$</span> <span class="cmd">whoami</span></div>
+        <div class="name-line">AURA OSINT</div>
+        <div class="line"><span class="k">username</span>&nbsp;&nbsp;<span class="v accent">{{ developer }}</span></div>
+        <div class="line"><span class="k">from</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="v">India</span></div>
+        <div class="status">✔ access granted</div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="block">
+        <div class="line prompt"><span class="user">aura</span><span class="at">@</span><span class="host">hub</span><span class="path">:~$</span> <span class="cmd">cat role.txt</span></div>
+        <div class="role-tags">
+          <div class="tag">Coding</div>
+          <div class="tag">Python Using</div>
+          <div class="tag">Bots Developers</div>
+          <div class="tag">APIs Makes</div>
+          <div class="tag">Cyber Security Member</div>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="block">
+        <div class="line prompt"><span class="user">aura</span><span class="at">@</span><span class="host">hub</span><span class="path">:~$</span> <span class="cmd">ls links/</span></div>
+        <div class="links">
+          <a class="link-row" href="https://t.me/+x79ArUkfT_RlNmY1" target="_blank" rel="noopener">
+            <span class="lk">update</span><span class="lv">t.me/+x79ArUkfT_RlNmY1</span><span class="arrow">→</span>
+          </a>
+          <a class="link-row" href="https://t.me/osintsgrp" target="_blank" rel="noopener">
+            <span class="lk">group</span><span class="lv">t.me/osintsgrp</span><span class="arrow">→</span>
+          </a>
+          <a class="link-row" href="https://t.me/+pLKK2dxxKBM4YjY1" target="_blank" rel="noopener">
+            <span class="lk">osint_group</span><span class="lv">t.me/+pLKK2dxxKBM4YjY1</span><span class="arrow">→</span>
+          </a>
+          <a class="link-row" href="https://t.me/Aurasinf/10" target="_blank" rel="noopener">
+            <span class="lk">all_bots</span><span class="lv">t.me/Aurasinf/10</span><span class="arrow">→</span>
+          </a>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="block">
+        <div class="line prompt"><span class="user">aura</span><span class="at">@</span><span class="host">hub</span><span class="path">:~$</span> <span class="cmd">cat contact.txt</span></div>
+        <div class="line"><span class="k">official</span>&nbsp;&nbsp;<span class="v accent">{{ developer }}</span></div>
+      </div>
+
+      <div class="footer">
+        thanks for stopping by <span class="cursor"></span>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>

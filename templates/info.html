@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Info · {{ developer }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <nav class="topbar pubnav">
+    <b class="mono" style="font-size:17px">⚡ <span style="color:#60a5fa">OSINT</span> HUB</b>
+    <div class="who">
+      <a class="btn btn-sm" href="/">Home</a>
+      <a class="btn btn-sm" href="/terminal">⌨️ Terminal</a>
+      <a class="btn btn-sm" href="/admin/login">🛡️ Admin</a>
+    </div>
+  </nav>
+
+  <section class="info-hero">
+    <div class="avatar-ic">⚡</div>
+    <h1 style="font-size:clamp(26px,4vw,42px)">OSINT HUB</h1>
+    <p class="sub" style="max-width:620px;margin:10px auto 0">
+      Ek api wrapper serve system — multiple upstream OSINT apis ko aapke personal
+      <b>API keys</b> ke piche wrap karta hai: limits, expiry, access control, logging aur aapka
+      <b>custom response style</b> har key pe.
+    </p>
+  </section>
+
+  <div class="content" style="max-width:880px;margin-top:0">
+    <div class="stats">
+      <div class="stat card"><div class="sic" style="background:rgba(59,130,246,.15)">🎯</div>
+        <div class="num">{{ '{:,}'.format(hits) }}</div><div class="lab">Total API hits served</div></div>
+      <div class="stat card"><div class="sic" style="background:rgba(139,92,246,.15)">🔑</div>
+        <div class="num">{{ keys }}</div><div class="lab">Keys issued</div></div>
+      <div class="stat card"><div class="sic" style="background:rgba(34,197,94,.15)">✅</div>
+        <div class="num">200</div><div class="lab">Clean JSON responses</div></div>
+    </div>
+
+    <div class="card card-pad" style="margin-bottom:18px">
+      <div class="section-title"><span class="em">✨</span> Features</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:14px">
+        {% for em,t,d in [('🔑','Key system','Custom / random keys, edit, expire, extend, reset, disable'),
+        ('⏱️','Limits','Daily·per-minute ratelimits & fixed total cap (auto-disable)'),
+        ('🔌','Endpoint control','Global on/off switch + maintenance banner per endpoint'),
+        ('🎨','Response style','Per-key developer & JSON template override'),
+        ('🗂️','Search logs','Full request logs with search/filter, live previews'),
+        ('📈','Analytics','Daily volume, top endpoints & keys, success rate'),
+        ('🛡️','Security','Login attempt log with IP tracking'),
+        ('📘','/docs','Public API docs page auto-generated')] %}
+        <div class="optcard"><div><b>{{ em }} {{ t }}</b><div class="desc">{{ d }}</div></div></div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card card-pad" style="text-align:center">
+      <p style="font-weight:800">Developer</p>
+      <p class="mono" style="font-size:20px;color:#60a5fa">{{ developer }}</p>
+      <div class="hr"></div>
+      <a class="btn btn-prime" href="/docs">📘 API Docs</a>
+      <a class="btn" href="/">🏠 Home</a>
+    </div>
+  </div>
+  <div class="pagefoot mono">OSINT HUB · {{ developer }}</div>
+</body>
+</html>

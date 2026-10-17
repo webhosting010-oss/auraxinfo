@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Key · {{ k.key[:10] }}{% endblock %}
+{% block topbar_title %}Key inspector{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:16px">
+  <div>
+    <h2 style="font-size:24px">{{ k.client or 'Unnamed client' }}</h2>
+    <div class="sub mono">{{ k.key }} &nbsp;<button class="btn btn-sm" data-copy="{{ k.key }}">📋 copy</button></div>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:10px">
+    <a class="btn" href="/admin/keys">← Back</a>
+    <button class="btn btn-danger" data-row="delete" data-url="/admin/keys/{{ k.id }}/delete">🗑 Delete</button>
+  </div>
+</div>
+
+<div class="card card-pad" style="margin-bottom:20px">
+  <div class="mini-stats">
+    <div class="mini-stat"><b>{% if k.is_active %}<span style="color:#4ade80">● Live</span>{% else %}<span style="color:#f87171">● Off</span>{% endif %}</b><span>STATUS</span></div>
+    <div class="mini-stat"><b>{{ k.total_hits }}</b><span>TOTAL HITS</span></div>
+    <div class="mini-stat"><b>{{ k.today_hits }} <small class="muted">/ {{ k.daily_limit or '∞' }}</small></b><span>TODAY</span></div>
+    <div class="mini-stat"><b>{% if k.usage_mode=='rate_limited' %}⏱ {{ k.per_min_limit or '∞' }}/min{% elif k.usage_mode=='fixed_cap' %}⚡ cap {{ k.total_cap }}{% else %}♾️{% endif %}</b><span>USAGE MODE</span></div>
+    <div class="mini-stat"><b>{% if k.expires_at %}{{ k.expires_at[:10]|dt_only }}{% else %}Lifetime{% endif %}</b><span>EXPIRES</span></div>
+    <div class="mini-stat"><b>{% if k.allowed=='all' %}⚡ All{% else %}{{ k.allowed.split(',')|length }} ep{% endif %}</b><span>ACCESS</span></div>
+    {% if k.style_developer or k.style_template %}
+    <div class="mini-stat"><b>🎨 custom</b><span id="styleTag">RESPONSE STYLE</span></div>
+    {% endif %}
+  </div>
+  {% if k.note %}<div class="hintbox">📝 {{ k.note }}</div>{% endif %}
+  {% if k.style_template %}
+  <div class="code-block" style="font-size:11px">{{ k.style_template }}</div>
+  {% endif %}
+</div>
+
+<div class="card" style="padding:18px 20px;margin-bottom:18px">
+  <div class="filters" method="GET" style="text-align:right">
+    <label style="font-size:12px;color:var(--muted);font-weight:700">TEST URLs:</label>
+    {% if k.allowed=='all' or 'num' in k.allowed %}
+    <a class="chip ep mono" href="/api/num?key={{ k.key }}&term=7549599202" target="_blank">/api/num?term=…</a>{% endif %}
+    {% if k.allowed=='all' or 'tg' in k.allowed %}
+    <a class="chip ep mono" href="/api/tg?key={{ k.key }}&term=Redoxlala" target="_blank">/api/tg?term=…</a>{% endif %}
+    {% if k.allowed=='all' or 'numpak' in k.allowed %}
+    <a class="chip ep mono" href="/api/numpak?key={{ k.key }}&term=3455310824" target="_blank">/api/numpak?term=…</a>{% endif %}
+    {% if k.allowed=='all' or 'osint' in k.allowed %}
+    <a class="chip ep mono" href="/api/osint?key={{ k.key }}&term=919709586997" target="_blank">/api/osint?term=…</a>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div style="padding:14px 18px;border-bottom:1px solid var(--line)" class="section-title">
+    <span class="em">🗂️</span> Key logs <span class="chip">{{ logs|length }} recent</span>
+    <a class="right btn btn-sm" href="/admin/logs?q={{ k.key }}">Full search →</a>
+  </div>
+  <div class="tbl-box">
+    <table class="tbl">
+      <thead><tr><th>STATUS</th><th>ENDPOINT</th><th>TERM</th><th>MS</th><th>IP</th><th>WHEN</th></tr></thead>
+      <tbody>
+      {% for l in logs %}
+      <tr data-log="{{ l.id }}" style="cursor:pointer">
+        <td><span class="badge {{ 'b-green' if l.success else 'b-red' }}">{{ l.status_code }}</span></td>
+        <td class="mono">{{ l.endpoint }}</td>
+        <td class="mono">{{ l.term or '-' }}</td>
+        <td>{{ l.response_time }}</td>
+        <td class="mono small">{{ l.ip }}</td>
+        <td class="small muted">{{ l.created_at|fmt_dt }}</td>
+      </tr>
+      {% endfor %}
+      {% if not logs %}<tr><td colspan="6" style="text-align:center;padding:30px;color:#5f6675">Abhi koi hit nahi.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+/* reuse preview modal */
+</script>
+{% endblock %}

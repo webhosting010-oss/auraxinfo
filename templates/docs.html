@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Documentation | {{ developer }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.cdnfonts.com/css/sf-pro-display');
+        
+        * {
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: #000000;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(120, 119, 198, 0.15) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(0, 122, 255, 0.15) 0%, transparent 40%);
+            background-attachment: fixed;
+            color: #f5f5f7;
+        }
+
+        /* iOS Glassmorphism Card */
+        .ios-glass {
+            background: rgba(28, 28, 30, 0.65);
+            backdrop-filter: blur(25px) saturate(190%);
+            -webkit-backdrop-filter: blur(25px) saturate(190%);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .ios-glass-header {
+            background: rgba(18, 18, 20, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .ios-input {
+            background: rgba(118, 118, 128, 0.24);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+            transition: all 0.25s ease;
+        }
+
+        .ios-input:focus {
+            background: rgba(118, 118, 128, 0.35);
+            border-color: #0a84ff;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
+        }
+
+        .ios-badge-get {
+            background: rgba(52, 199, 89, 0.18);
+            color: #30d158;
+            border: 1px solid rgba(48, 209, 88, 0.3);
+        }
+
+        .ios-btn-blue {
+            background: #0a84ff;
+            color: #ffffff;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .ios-btn-blue:active {
+            transform: scale(0.96);
+            opacity: 0.85;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #000;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #3a3a3c;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="min-h-screen pb-16 antialiased selection:bg-blue-500 selection:text-white">
+
+    <!-- Top iOS Blur Navigation -->
+    <header class="sticky top-0 z-50 ios-glass-header px-4 py-3 sm:px-8">
+        <div class="max-w-7xl mx-auto flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/30">
+                    <i class="fa-solid fa-code text-white text-lg"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-lg leading-tight tracking-tight text-white">API Documentation</h1>
+                    <p class="text-xs text-gray-400 font-medium">OSINT Developer Hub</p>
+                </div>
+            </div>
+            
+            <div class="flex items-center space-x-3">
+                <a href="https://t.me/+x79ArUkfT_RlNmY1" target="_blank" class="hidden sm:flex items-center space-x-2 text-xs font-semibold px-4 py-2 rounded-full ios-glass hover:bg-white/10 transition">
+                    <i class="fa-brands fa-telegram text-blue-400 text-sm"></i>
+                    <span>Channel</span>
+                </a>
+                <a href="/admin/login" class="text-xs font-semibold px-4 py-2 rounded-full ios-btn-blue">
+                    Dashboard
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-8 pt-8">
+
+        <!-- Hero Section -->
+        <div class="text-center max-w-3xl mx-auto mb-10">
+            <span class="px-3.5 py-1.5 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20 inline-block mb-3">
+                ⚡ RESTful API Endpoints
+            </span>
+            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-white mb-3">
+                Build &amp; Integrate Seamlessly
+            </h2>
+            <p class="text-gray-400 text-sm sm:text-base font-normal">
+                High-performance OSINT endpoints. Pass your valid API key in query parameters to authenticate requests.
+            </p>
+        </div>
+
+        <!-- iOS Style Search Bar -->
+        <div class="max-w-xl mx-auto mb-10">
+            <div class="relative">
+                <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                <input 
+                    type="text" 
+                    id="searchApi" 
+                    placeholder="Search endpoints (e.g. TG, Number, Pak, OSINT)..." 
+                    class="w-full pl-11 pr-10 py-3.5 rounded-2xl ios-input text-sm font-medium placeholder-gray-500"
+                    onkeyup="filterApis()"
+                >
+                <button id="clearSearch" onclick="clearSearchInput()" class="hidden absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white p-1">
+                    <i class="fa-solid fa-circle-xmark text-sm"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Base URL Card -->
+        <div class="ios-glass rounded-3xl p-5 mb-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div class="space-y-1">
+                <span class="text-xs text-gray-400 font-semibold uppercase tracking-wider">Base Request URL</span>
+                <div class="font-mono text-sm sm:text-base text-blue-400 font-medium break-all" id="baseUrlStr">
+                    {{ base_url }}
+                </div>
+            </div>
+            <button onclick="copyText('{{ base_url }}', this)" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-white border border-white/10 transition flex items-center space-x-2 shrink-0">
+                <i class="fa-regular fa-copy"></i>
+                <span>Copy Base URL</span>
+            </button>
+        </div>
+
+        <!-- Endpoints Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6" id="apiGrid">
+            {% for e in endpoints if e.enabled %}
+            <div class="api-card ios-glass rounded-3xl p-6 flex flex-col justify-between hover:border-blue-500/40 transition-all duration-300" data-name="{{ e.name|lower }}" data-endpoint="/api/{{ e.slug }}">
+                <div>
+                    <!-- Header -->
+                    <div class="flex items-center justify-between mb-4">
+                        <span class="ios-badge-get text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">
+                            GET
+                        </span>
+                        <span class="text-xs font-mono text-gray-400 bg-black/40 px-3 py-1 rounded-full border border-white/5">
+                            Required: <span class="text-amber-400 font-semibold">{{ e.term_param or 'term' }}</span>
+                        </span>
+                    </div>
+
+                    <!-- Title & Description -->
+                    <h3 class="text-lg font-bold text-white mb-1 flex items-center space-x-2">
+                        <span>{{ e.emoji }} {{ e.name }}</span>
+                    </h3>
+                    <p class="text-xs text-gray-400 mb-4 leading-relaxed font-normal">
+                        {{ e.name }} lookup
+                    </p>
+
+                    <!-- Endpoint Path -->
+                    <div class="bg-black/50 rounded-2xl p-3 border border-white/5 font-mono text-xs text-gray-300 flex items-center justify-between mb-4 gap-2">
+                        <span class="text-blue-400 font-medium truncate">/api/{{ e.slug }}</span>
+                        <button onclick="copyText('/api/{{ e.slug }}', this)" class="text-gray-400 hover:text-white transition px-2 py-1">
+                            <i class="fa-regular fa-copy"></i>
+                        </button>
+                    </div>
+
+                    <!-- Parameters Detail -->
+                    <div class="space-y-2 mb-4">
+                        <div class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Query Parameters</div>
+                        <div class="bg-white/5 rounded-xl p-3 border border-white/5 space-y-1.5">
+                            <div class="flex justify-between text-xs">
+                                <span class="font-mono text-amber-300">key</span>
+                                <span class="text-gray-400 text-[11px]">Your unique API Key (Required)</span>
+                            </div>
+                            <div class="flex justify-between text-xs border-t border-white/5 pt-1.5">
+                                <span class="font-mono text-blue-300">{{ e.term_param or 'term' }}</span>
+                                <span class="text-gray-400 text-[11px]">Target Query Parameter</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Example Call Box -->
+                <div class="pt-2 border-t border-white/5">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Example Request</span>
+                        <button onclick="copyText('{{ base_url }}/api/{{ e.slug }}?key=YOUR_API_KEY&amp;{{ e.term_param or 'term' }}=EXAMPLE', this)" class="text-xs text-blue-400 hover:text-blue-300 font-medium flex items-center space-x-1">
+                            <i class="fa-solid fa-link text-[10px]"></i>
+                            <span>Copy Request</span>
+                        </button>
+                    </div>
+                    <div class="bg-black/70 rounded-xl p-2.5 font-mono text-[11px] text-gray-300 border border-white/5 break-all select-all">
+                        {{ base_url }}/api/{{ e.slug }}?key=YOUR_API_KEY&amp;{{ e.term_param or 'term' }}=EXAMPLE
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- No Results Fallback -->
+        <div id="noResults" class="hidden text-center py-16">
+            <div class="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-4 text-gray-500 text-2xl">
+                <i class="fa-solid fa-magnifying-glass"></i>
+            </div>
+            <h3 class="text-lg font-semibold text-white">No Endpoints Found</h3>
+            <p class="text-xs text-gray-400 mt-1">Try searching for a different endpoint or keyword.</p>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="max-w-7xl mx-auto px-4 sm:px-8 mt-16 text-center text-xs text-gray-500">
+        <p>© 2026 API HUB. All rights reserved. Powered by Owner {{ developer }}</p>
+    </footer>
+
+    <!-- JavaScript Functions -->
+    <script>
+        function filterApis() {
+            const input = document.getElementById('searchApi').value.toLowerCase();
+            const clearBtn = document.getElementById('clearSearch');
+            const cards = document.querySelectorAll('.api-card');
+            let visibleCount = 0;
+
+            clearBtn.classList.toggle('hidden', input.length === 0);
+
+            cards.forEach(card => {
+                const name = card.getAttribute('data-name');
+                const endpoint = card.getAttribute('data-endpoint');
+
+                if (name.includes(input) || endpoint.includes(input)) {
+                    card.style.display = 'flex';
+                    visibleCount++;
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+
+            document.getElementById('noResults').classList.toggle('hidden', visibleCount > 0);
+        }
+
+        function clearSearchInput() {
+            document.getElementById('searchApi').value = '';
+            filterApis();
+        }
+
+        function copyText(text, btnElement) {
+            navigator.clipboard.writeText(text).then(() => {
+                const originalHTML = btnElement.innerHTML;
+                btnElement.innerHTML = `<i class="fa-solid fa-check text-green-400"></i> <span class="text-green-400">Copied!</span>`;
+                setTimeout(() => {
+                    btnElement.innerHTML = originalHTML;
+                }, 2000);
+            }).catch(err => {
+                console.error('Copy failed:', err);
+            });
+        }
+    </script>
+</body>
+</html>

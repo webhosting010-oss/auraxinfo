@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Login · OSINT HUB</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>
+  body{margin:0;padding:0;min-height:100vh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+  .bg-video{
+    position:fixed;inset:0;z-index:-1;
+    object-fit:cover;width:100vw;height:100vh;
+    filter:blur(12px)saturate(120%);
+    opacity:.85;
+  }
+  .bg-overlay{
+    position:fixed;inset:0;z-index:0;
+    background:linear-gradient(135deg,rgba(139,92,246,.5),rgba(236,72,153,.45),rgba(244,114,182,.35));
+  }
+  .login-wrap{position:relative;z-index:10;width:100%;padding:30px 20px;display:flex;align-items:center;justify-content:center}
+  .login-card{
+    width:100%;max-width:380px;padding:44px 34px;
+    background:#0a0a0f;
+    border:1px solid rgba(255,255,255,.08);
+    border-radius:20px;
+    box-shadow:0 30px 70px rgba(0,0,0,.6);
+  }
+  .login-header{text-align:center;margin-bottom:28px}
+  .login-header h2{
+    font-size:32px;font-weight:800;color:#fff;margin:0 0 8px;
+  }
+  .login-sub{color:#9ca3af;font-size:14px;margin:0}
+  .flash{margin-bottom:16px;padding:10px 14px;border-radius:10px;border:1px solid;color:#f8fafc;font-size:12.5px;background:rgba(0,0,0,.4)}
+  .flash.f-error{border-color:#fb7185;background:rgba(244,114,182,.15);color:#fce7f3}
+  .flash.f-success{border-color:#7ee7a7;background:rgba(126,231,167,.15);color:#ecfdf5}
+  .flash .x{float:right;cursor:pointer;font-weight:800;color:#cbd5e1}
+  form{display:flex;flex-direction:column;gap:16px}
+  .label{font-size:12px;font-weight:700;letter-spacing:.08em;color:#9ca3af;text-transform:uppercase;display:block;margin-bottom:8px}
+  input{
+    width:100%;padding:13px 16px;border-radius:10px;font-family:inherit;font-size:14px;
+    background:#0b0d12;border:1px solid #272a33;color:#fff;outline:none;
+    transition:border-color .2s,box-shadow .2s
+  }
+  input::placeholder{color:#4b5563}
+  input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+  .btn-prime{
+    width:100%;justify-content:center;background:linear-gradient(135deg,#3b82f6,#a855f7 100%);
+    border:none;color:#fff;font-weight:700;padding:12px;border-radius:10px;
+    box-shadow:0 12px 28px rgba(59,130,246,.35),inset 0 1px 0 rgba(255,255,255,.3);
+    transition:transform .15s,filter .15s;margin-top:4px
+  }
+  .btn-prime:hover{filter:brightness(1.1);transform:translateY(-1px)}
+  .btn-prime:active{transform:scale(.97)}
+  .footer-link{display:block;text-align:center;font-size:12.5px;color:#6b7280;margin-top:22px;transition:color .2s}
+  .footer-link .hl{color:#6366f1;text-decoration:underline}
+  .footer-link:hover{color:#4f46e5}
+  @media (max-width:480px){.login-card{padding:34px 24px;margin:0 16px}}
+</style>
+</head>
+<body>
+  <video class="bg-video" autoplay muted loop playsinline>
+    <source src="https://files.catbox.moe/2jv4js.mp4" type="video/mp4">
+  </video>
+  <div class="bg-overlay"></div>
+  <div class="login-wrap">
+    <div class="login-card card glow-border">
+      <div class="login-header">
+        <h2>Admin <span style="color:#fff">Login</span></h2>
+        <p class="login-sub">Sign in to continue</p>
+      </div>
+
+      {% with msgs = get_flashed_messages(with_categories=true) %}
+        {% for cat, m in msgs %}<div class="flash f-{{ cat }}">{{ m }}<span class="x">✕</span></div>{% endfor %}
+      {% endwith %}
+
+      <form method="POST">
+        <label class="label">Username</label>
+        <input type="text" name="username" required autofocus autocomplete="username">
+        <label class="label">Password</label>
+        <input type="password" name="password" required autocomplete="current-password">
+        <button class="btn-prime btn-lg" style="width:100%;justify-content:center">Login</button>
+      </form>
+      <a href="/" class="footer-link">OSINT API Hub | <span class="hl">Home</span></a>
+    </div>
+  </div>
+
+  <script>
+    document.querySelectorAll('.flash .x').forEach(function(b){
+      b.onclick=function(){b.parentElement.style.display='none'}
+    });
+  </script>
+</body>
+</html>

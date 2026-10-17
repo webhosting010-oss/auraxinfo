@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Security{% endblock %}
+{% block topbar_title %}Security{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:16px">
+  <div><h2 style="font-size:24px">🛡️ Security</h2>
+    <div class="sub">Panel login attempts</div></div>
+  <div style="margin-left:auto;display:flex;gap:10px">
+    <span class="chip" style="color:#fca5a5;border-color:rgba(239,68,68,.4)">{{ failed }} failed</span>
+    <span class="chip" style="color:#4ade80;border-color:rgba(34,197,94,.4)">{{ ok }} success</span>
+  </div>
+</div>
+
+<div class="card">
+  <div style="padding:14px 18px;border-bottom:1px solid var(--line)" class="section-title">
+    <span class="em">🔄</span> Login attempts</div>
+  <div class="tbl-box">
+    <table class="tbl">
+      <thead><tr><th>USER</th><th>ROLE</th><th>IP</th><th>STATUS</th><th>WHEN</th></tr></thead>
+      <tbody>
+      {% for a in attempts %}
+      <tr>
+        <td><b class="mono">{{ a.username }}</b></td>
+        <td><span class="chip">{{ a.role }}</span></td>
+        <td class="mono small">{{ a.ip }}</td>
+        <td>{% if a.status=='success' %}<span class="badge b-green"><i></i>success</span>
+            {% else %}<span class="badge b-red"><i></i>invalid</span>{% endif %}</td>
+        <td class="small muted">{{ a.created_at|fmt_dt }}</td>
+      </tr>
+      {% endfor %}
+      {% if not attempts %}<tr><td colspan="5" style="text-align:center;padding:30px;color:#5f6675">No login attempts yet.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block topbar_title %}Settings{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:16px">
+  <div><h2 style="font-size:24px">⚙️ Settings</h2>
+    <div class="sub">Branding & security</div></div>
+</div>
+
+<div class="row">
+  <div class="card card-pad grow" style="min-width:320px">
+    <div class="section-title"><span class="em">🎨</span> Branding & maintenance</div>
+    <form action="/admin/settings" method="POST" style="margin-top:14px">
+      <input type="hidden" name="what" value="brand">
+      <label class="label">Developer handle (responses ka <code>developer</code> field)</label>
+      <input type="text" name="developer" value="{{ developer }}" style="direction:ltr">
+      <label class="label">Maintenance banner (disabled endpoints error me dikhega)</label>
+      <input type="text" name="maintenance_message" value="{{ maintenance }}">
+      <div style="margin-top:18px"><button class="btn btn-prime">💾 Save</button></div>
+    </form>
+  </div>
+
+  <div class="card card-pad" style="width:420px;max-width:100%">
+    <div class="section-title"><span class="em">🔒</span> Change password</div>
+    <form action="/admin/settings" method="POST" style="margin-top:14px">
+      <input type="hidden" name="what" value="password">
+      <label class="label">Current password</label>
+      <input type="password" name="current_password" required autocomplete="current-password">
+      <label class="label">New password</label>
+      <input type="password" name="new_password" required autocomplete="new-password" minlength="6">
+      <div style="margin-top:18px"><button class="btn btn-green">🔒 Update password</button></div>
+    </form>
+    <div class="hr"></div>
+    <div class="sub">
+      <b>Default creds reminder:</b><br>
+      First run par <code class="mono">admin / aura@9751</code> banta hai — console check karke Settings se change karo.
+    </div>
+  </div>
+</div>
+{% endblock %}

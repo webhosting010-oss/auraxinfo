@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}User Accounts{% endblock %}
+{% block topbar_title %}User Accounts{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:18px">
+  <div>
+    <h2 style="font-size:24px">👤 User accounts</h2>
+    <div class="sub">Login panel users — username + password bana ke share karo · users sirf read-only panel dekhte hain</div>
+  </div>
+  <div style="margin-left:auto">
+    <button class="btn btn-prime" id="addUserBtn">＋ New user</button>
+  </div>
+</div>
+
+<div class="card">
+  <div style="padding:14px 18px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--line)">
+    <div class="section-title" style="font-size:15px"><span class="em">👥</span> Accounts
+      <span class="chip">{{ users|length }} total</span></div>
+    <span class="right sub">{{ users | selectattr('is_active') | list | length }} active ·
+      {{ users | rejectattr('is_active') | list | length }} blocked</span>
+  </div>
+
+  <div class="tbl-box">
+    <table class="tbl">
+      <thead><tr>
+        <th>Username</th><th>Created</th><th>Status</th><th style="text-align:right">Actions</th>
+      </tr></thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td><b class="mono">{{ u.username }}</b></td>
+          <td class="sub">{{ u.created_at|fmt_dt }}</td>
+          <td>
+            {% if u.is_active %}
+            <span class="badge b-green"><i></i>ACTIVE</span>
+            {% else %}
+            <span class="badge b-red"><i></i>BLOCKED</span>
+            {% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            <form method="POST" action="/admin/users/{{ u.id }}/reset" style="display:inline-block;margin-right:6px">
+              <input type="hidden" name="password" value="newpass{{ u.id }}123">
+              <button class="btn btn-sm" title="reset password → newpass{{u.id}}123, baad me edit karna ho to bata dena">Reset pass</button>
+            </form>
+            <form method="POST" action="/admin/users/{{ u.id }}/toggle" style="display:inline-block;margin-right:6px">
+              <button class="btn btn-sm">{{ 'Block' if u.is_active else 'Unblock' }}</button>
+            </form>
+            <form method="POST" action="/admin/users/{{ u.id }}/delete" style="display:inline-block"
+                  onsubmit="return confirm('Delete {{ u.username }}?')">
+              <button class="btn btn-sm" style="color:#f87171">🗑</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not users %}
+        <tr><td colspan="4" style="text-align:center;padding:30px;color:#5f6675">
+          Koi user nahi hai — <b>＋ New user</b> se banao.
+        </td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card card-pad" style="margin-top:20px">
+  <div class="section-title"><span class="em">ℹ️</span> User accounts kya kar sakte hain</div>
+  <p class="sub" style="margin-top:8px">
+    Users <b>read-only panel</b> dekh sakte hain: Dashboard, Search Logs, Analytics, Endpoints status.<br>
+    API keys / Settings / Security / Users — in sab pe <span class="chip">head-admin only</span> lock laga hai.
+  </p>
+</div>
+
+<!-- modal -->
+<div class="modal-bg" id="m-adduser">
+  <div class="modal" style="width:min(420px,92%)">
+    <div class="modal-head"><h3><span class="em">👤</span> New user account</h3>
+      <button class="modal-x" data-close-modal>✕</button></div>
+    <form method="POST" action="/admin/users/create">
+      <div class="modal-body" style="display:grid;gap:12px">
+        <label class="label">Username</label>
+        <input type="text" name="username" required minlength="3" placeholder="jaise: rohan_support" autocomplete="off">
+        <label class="label">Password (min 6)</label>
+        <input type="text" name="password" required minlength="6" placeholder="strong password" autocomplete="off">
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal>Cancel</button>
+        <button class="btn btn-prime">Create user</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('addUserBtn')?.addEventListener('click', () => openModalId('m-adduser'));
+</script>
+{% endblock %}

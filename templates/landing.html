@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OSINT API · {{ developer }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <nav class="topbar pubnav" style="position:sticky">
+    <b class="mono" style="font-size:17px">⚡ <span style="color:#60a5fa">OSINT</span> HUB</b>
+    <div class="who">
+      <a class="btn btn-sm" href="/docs">Docs</a>
+      <a class="btn btn-sm" href="/terminal">⌨️ Terminal</a>
+      <a class="btn btn-sm" href="/info">Info</a>
+      <a class="btn btn-sm" href="/admin/login">🛡️ Admin</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="avatar-ic" style="margin-bottom:14px">⚡</div>
+    <h1>OSINT Lookup API</h1>
+    <p>Number Info · Telegram → Number · Pakistan SIM Database · OSINT Leak Search — sab kuch aapke apne API keys ke neeche, daily limits, per-minute ratelimits aur total caps ke saath.</p>
+    <div class="cta">
+      <a class="btn btn-prime btn-lg" href="/docs">📘 API Documentation</a>
+      <a class="btn btn-lg" href="/admin/login">🛡️ Admin Panel</a>
+    </div>
+  </section>
+
+  <div class="content" style="max-width:1060px">
+    <div class="stats">
+      <div class="stat card"><div class="sic" style="background:rgba(59,130,246,.15)">🔌</div>
+        <div class="num">{{ endpoints|length }}</div><div class="lab">Live endpoints</div></div>
+      <div class="stat card"><div class="sic" style="background:rgba(139,92,246,.15)">♾️</div>
+        <div class="num mono" style="font-size:20px">key:key</div><div class="lab">Access via <b>key</b> param</div></div>
+      <div class="stat card"><div class="sic" style="background:rgba(34,197,94,.15)">✅</div>
+        <div class="num">JSON</div><div class="lab">Clean responses</div></div>
+    </div>
+
+    <div class="card card-pad">
+      <div class="section-title"><span class="em">🧪</span> Quick test
+        <a class="right small" href="/docs" style="margin-left:auto">full docs →</a></div>
+      <div class="code-block">GET {{ request.host_url.rstrip('/') }}/api/num?key=<span class="m">YOUR_KEY</span>&term=7549599202</div>
+      <p class="sub" style="margin-top:12px">Bina key ke request bhejoge to error JSON milegi <code>success:false · status_code:401</code></p>
+    </div>
+  </div>
+  <div class="pagefoot mono">OSINT HUB · {{ developer }}</div>
+</body>
+</html>

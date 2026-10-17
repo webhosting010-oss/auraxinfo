@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Analytics{% endblock %}
+{% block topbar_title %}Analytics{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:16px">
+  <div><h2 style="font-size:24px">📈 Analytics</h2>
+    <div class="sub">Aggregate API traffic</div></div>
+  <div class="stats" style="margin-left:auto;grid-template-columns:auto;gap:10px;display:flex">
+    <div class="chip">Total: {{ '{:,}'.format(total) }}</div>
+    <div class="chip">Success: {{ rate }}%</div>
+    <div class="chip">Avg: {{ avg }}ms</div>
+  </div>
+</div>
+
+<div class="row" style="margin-bottom:20px">
+  <div class="card chart-card grow" style="min-width:340px">
+    <div class="section-title"><span class="em">📈</span> Daily volume (21d)</div>
+    <div class="chart-wrap"><canvas class="chart-line" data-data="{{ daily|tojson }}"></canvas></div>
+  </div>
+  <div class="card chart-card" style="width:430px;flex-shrink:0">
+    <div class="section-title"><span class="em">🥇</span> Endpoints</div>
+    <div class="donut-wrap"><canvas class="chart-donut" data-data="{{ top_eps|tojson }}"></canvas></div>
+  </div>
+</div>
+
+<div class="card">
+  <div style="padding:14px 18px;border-bottom:1px solid var(--line)" class="section-title">
+    <span class="em">🔑</span> Top keys (by hits)</div>
+  <div class="tbl-box">
+    <table class="tbl" style="min-width:560px">
+      <thead><tr><th>#</th><th>KEY</th><th>TOTAL</th><th></th></tr></thead>
+      <tbody>
+      {% for kr in top_keys %}
+      <tr>
+        <td class="muted">{{ loop.index }}</td>
+        <td><span class="chip key mono">{{ (kr.k or 'unknown')|upper }}</span></td>
+        <td class="t-num">{{ kr.c }}</td>
+        <td>{% if kr.kid %}<a class="btn btn-sm" href="/admin/keys/{{ kr.kid }}">Open →</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      {% if not top_keys %}<tr><td colspan="4" style="text-align:center;padding:30px;color:#5f6675">No data yet.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
+{% endblock %}

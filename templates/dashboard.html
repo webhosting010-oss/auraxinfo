@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block topbar_title %}Dashboard{% endblock %}
+{% block content %}
+<div class="row" style="align-items:flex-start;margin-bottom:18px">
+  <div>
+    <h2 style="font-size:26px">Dashboard</h2>
+    <div class="sub">DB connected · uptime {{ uptime }} · {{ admin.username if admin else session.get('admin_name', 'user') }}</div>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:10px">
+    <a class="btn" href="{{ url_for('admin_analytics') }}">📈 Analytics</a>
+    {% if session.get('admin_id') %}
+    <button class="btn btn-prime" id="newKeyBtn">＋ New key</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat card" style="--gl:rgba(59,130,246,.14)">
+    <div class="sic" style="background:rgba(59,130,246,.15)">⚡</div>
+    <div class="num">{{ '{:,}'.format(total) }}</div>
+    <div class="lab">Total requests</div>
+    <div class="foot" style="color:#4ade80">📈 {{ '{:,}'.format(today) }} today</div>
+  </div>
+  <div class="stat card" style="--gl:rgba(139,92,246,.14)">
+    <div class="sic" style="background:rgba(139,92,246,.15)">🔑</div>
+    <div class="num">{{ keys_total }}</div>
+    <div class="lab">API keys</div>
+    <div class="foot" style="color:#4ade80">● {{ keys_live }} live</div>
+  </div>
+  <div class="stat card" style="--gl:rgba(34,197,94,.14)">
+    <div class="sic" style="background:rgba(34,197,94,.15)">🔌</div>
+    <div class="num">{{ eps_online }}/{{ eps|length }}</div>
+    <div class="lab">Endpoints online</div>
+    <div class="foot muted">global switch</div>
+  </div>
+  <div class="stat card" style="--gl:rgba(245,158,11,.14)">
+    <div class="sic" style="background:rgba(245,158,11,.15)">❤️</div>
+    <div class="num">{{ rate }}%</div>
+    <div class="lab">Success rate</div>
+    <div class="foot muted">{{ '{:,}'.format(total) }} logged</div>
+  </div>
+</div>
+
+<div class="row" style="margin-bottom:22px">
+  <div class="card card-pad glass grow" style="min-width:340px">
+    <div class="section-title"><span class="em">📊</span> 7-day flow <span class="right chip">peak {{ '{:,}'.format(peak) }}/day</span></div>
+    <div class="flow">
+      {% for d in daily[-7:] %}
+      <div class="flow-col">
+        <b class="flow-c">{{ d.c }}</b>
+        <div class="flow-track">
+          <div class="flow-bar" style="--h: {{ ((d.c / peak) * 100) | round(0, 'floor') if peak else 4 }}%; animation-delay: {{ loop.index * 0.08 }}s"></div>
+        </div>
+        <span class="flow-d">{{ d.d[8:] }}/{{ d.d[5:7] }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card card-pad glass grow" style="min-width:320px">
+    <div class="section-title"><span class="em">🩺</span> Endpoint health <span class="right chip">avg {{ avg_ms }}ms</span></div>
+    <div class="health">
+      {% for e in eps %}
+      {% set s = ep_stats.get(e.slug, {'c': 0, 'ok': 0, 'ms': 0}) %}
+      {% set okp = ((s.ok / s.c) * 100) | round(0, 'floor') if s.c else 0 %}
+      <div class="hp-row">
+        <span class="hp-em">{{ e.emoji }}</span>
+        <div class="hp-name"><b>{{ e.name }}</b><small class="mono">{{ e.slug }}</small></div>
+        <div class="hp-meta">
+          <span class="chip {{ 'b-green' if e.enabled else 'b-red' }}"><i></i>{{ 'ONLINE' if e.enabled else 'OFFLINE' }}</span>
+          <span class="hp-stat mono">{{ s.c }} calls</span>
+          <span class="hp-stat mono">{{ s.ms }}ms</span>
+          <span class="hp-stat mono {{ 'good' if okp >= 80 else 'warn' }}" title="success rate">{{ okp }}%</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<!-- activity -->
+<div class="card card-pad" style="margin-bottom:22px">
+  <div class="section-title"><span class="em">🗓️</span> Activity <span class="right chip">peak {{ '{:,}'.format(peak) }}/day</span></div>
+  <div style="margin-top:10px">
+    {% for l in recent %}
+    <div class="act-row">
+      <div class="act-em">{% if l.success %}✅{% else %}⚠️{% endif %}</div>
+      <div>
+        <div class="t1 mono">{{ l.endpoint }} <span style="color:#5f6675">· {{ l.key_string }}</span></div>
+        <div class="t-sub mono">term: {{ l.term or '-' }}</div>
+      </div>
+      <div class="right" style="text-align:right">
+        <span class="badge {{ 'b-green' if l.success else 'b-red' }}">{{ l.status_code }}</span>
+        <div class="t-sub">{{ l.created_at|fmt_dt }}</div>
+      </div>
+    </div>
+    {% endfor %}
+    {% if not recent %}<div class="sub" style="padding:14px 0">Koi request nahi aayi abhi.</div>{% endif %}
+  </div>
+</div>
+
+<!-- maintenance banner -->
+<div class="card card-pad">
+  <div class="section-title"><span class="em">⚠️</span> Maintenance banner</div>
+  <form id="bannerForm" action="/admin/settings" method="POST" style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
+    <input type="hidden" name="what" value="brand">
+    <input type="text" name="maintenance_message" value="{{ maintenance }}"
+           placeholder="API is currently under maintenance." style="flex:1;min-width:260px">
+    <button class="btn">💾 Save</button>
+  </form>
+  <p class="sub" style="margin-top:10px">Iska text un endpoints pe dikhega jo dashboard → Endpoints se OFF kiye gaye hain.</p>
+</div>
+
+{% endblock %}

@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}API Keys{% endblock %}
+{% block topbar_title %}API Keys{% endblock %}
+{% block content %}
+
+<style>
+  /* Keys page — premium dark design */
+  .keys-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
+  .keys-title{font-size:20px;font-weight:800;letter-spacing:-.01em}
+  .keys-title .ic{margin-right:8px}
+  .keys-stats{font-size:12px;color:var(--dim);padding:4px 12px;border-radius:999px;border:1px solid var(--line2);background:rgba(255,255,255,.03)}
+  .keys-stats b{color:var(--text)}
+  .keys-filter{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+  .kf-tab{font-size:12px;font-weight:700;padding:7px 16px;border-radius:999px;border:1px solid transparent;background:transparent;color:var(--dim);cursor:pointer;transition:.15s}
+  .kf-tab:hover{color:var(--text);border-color:rgba(255,255,255,.1)}
+  .kf-tab.active{color:#fff;border-color:var(--text);background:rgba(255,255,255,.06)}
+  .kf-search{flex:1;max-width:340px}
+  .kf-search input{width:100%;padding:9px 14px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);font-size:13px;outline:none}
+  .kf-search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(139,92,246,.14)}
+  .bulkbar{display:flex;align-items:center;gap:10px;padding:10px 18px;background:rgba(15,18,25,.6);border:1px solid var(--line);border-radius:12px;margin-bottom:18px}
+  .bulkbar .count{font-size:13px;font-weight:800;color:#fff}
+  .bulkbar .count b{color:var(--accent)}
+  .bulkbar .btn{font-size:12px;font-weight:700;padding:7px 14px;border-radius:8px}
+  .bulkbar .btn-prime{background:linear-gradient(135deg,#2563eb,#6d28d9 100%);border:none;color:#fff;box-shadow:0 6px 20px rgba(59,99,246,.32)}
+  .bulkbar .btn-ghost{border:1px solid var(--line2);color:var(--dim);background:transparent}
+  .bulkbar .btn-danger{border-color:rgba(248,113,113,.35);color:#fca5a5;background:rgba(248,113,113,.08)}
+  .bulkbar .btn-danger:hover{border-color:var(--pro-danger);color:#fff;background:rgba(248,117,115,.2)}
+  table.keys-tbl{width:100%;border-collapse:separate;border-spacing:0}
+  table.keys-tbl th{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);padding:12px 16px;text-align:left;border-bottom:1px solid var(--line);background:rgba(15,18,24,.4)}
+  table.keys-tbl td{padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.03);color:var(--text);font-size:13px;vertical-align:middle}
+  table.keys-tbl tr:hover{background:rgba(139,92,246,.04)}
+  table.keys-tbl tr.selected{background:rgba(139,92,246,.1)}
+  .key-chip{font-size:11px;font-weight:800;padding:5px 12px;border-radius:999px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.12);color:#c4b5fd;letter-spacing:.01em}
+  .key-chip.tg{color:#a78bfa;border-color:rgba(167,139,250,.3);background:rgba(167,139,250,.12)}
+  .key-chip.osint{color:#a5f3fc;border-color:rgba(165,243,252,.3);background:rgba(165,243,252,.12)}
+  .access-chip{font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:8px;border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.12);color:#93c5fd;letter-spacing:.01em}
+  .usage-box{display:flex;flex-direction:column;gap:2px}
+  .usage-num{font-size:13px;font-weight:800;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .usage-sub{font-size:11px;color:var(--dim)}
+  .exp-box{display:flex;flex-direction:column;gap:2px}
+  .exp-date{font-size:13px;font-weight:800;letter-spacing:-.01em}
+  .exp-left{font-size:11px;color:var(--dim)}
+  .exp-left.days{color:#fbbf24;font-weight:700}
+  .exp-left.live{color:#4ade80}
+  .status-badge{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;font-size:11px;font-weight:800}
+  .status-badge.live{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.28);color:#4ade80}
+  .status-badge.live .dot{width:7px;height:7px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80}
+  .status-badge.off{background:rgba(248,117,115,.12);border:1px solid rgba(248,117,115,.28);color:#fca5a5}
+  .status-badge.expired{background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.28);color:#fbbf24}
+  .actions{display:flex;gap:6px;justify-content:flex-end}
+  .act-btn{width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);cursor:pointer;font-size:13px;display:inline-flex;align-items:center;justify-content:center;transition:.15s}
+  .act-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(139,92,246,.08)}
+  .act-btn.del:hover{border-color:rgba(248,117,115,.4);color:#f87171;background:rgba(248,117,115,.1)}
+  .empty{text-align:center;padding:40px;color:var(--dim)}
+  .empty .em{font-size:28px;margin-bottom:8px;display:block}
+</style>
+
+<div class="keys-head">
+  <div>
+    <div class="keys-title"><span class="ic">🔑</span>API keys</div>
+    <div class="keys-stats"><b>{{ keys|length }} total</b> · <b>{{ keys|selectattr('is_active')|list|length }} active</b></div>
+  </div>
+  <div class="keys-filter">
+    <div class="kf-tabs">
+      <a class="kf-tab {{ 'active' if status=='all' }}" href="/admin/keys?status=all{{ '&q='+q if q else '' }}">All</a>
+      <a class="kf-tab {{ 'active' if status=='live' }}" href="/admin/keys?status=live{{ '&q='+q if q else '' }}">Live</a>
+      <a class="kf-tab {{ 'active' if status=='expired' }}" href="/admin/keys?status=expired{{ '&q='+q if q else '' }}">Expired</a>
+      <a class="kf-tab {{ 'active' if status=='off' }}" href="/admin/keys?status=off{{ '&q='+q if q else '' }}">Off</a>
+    </div>
+    <div class="kf-search">
+      <form method="GET" style="margin:0">
+        <input type="hidden" name="status" value="{{ status }}">
+        <input type="search" name="q" value="{{ q or '' }}" placeholder="Search…">
+      </form>
+    </div>
+  </div>
+</div>
+
+<form id="bulkForm" action="/admin/keys/bulk" method="POST">
+  <div class="bulkbar" id="bulkbar" style="display:none">
+    <span class="count"><b id="bulkCount">0</b> selected</span>
+    <select id="bulkAction" name="bulk_action" style="width:auto;padding:7px 34px 7px 12px;text-transform:none;font-size:12px">
+      <option>Enable</option>
+      <option>Disable</option>
+      <option>Reset hits</option>
+      <option>Delete</option>
+    </select>
+    <button class="btn btn-prime btn-sm" type="submit">Apply</button>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="clearBulk()">Clear</button>
+  </div>
+
+  <div class="card">
+    <table class="keys-tbl">
+      <thead><tr>
+        <th style="width:40px"><input type="checkbox" class="cb" id="selAll"></th>
+        <th>CLIENT</th><th>KEY</th><th>ACCESS</th><th>USAGE</th><th>EXPIRES</th><th>STATUS</th><th style="width:140px;text-align:right">ACTIONS</th>
+      </tr></thead>
+      <tbody>
+      {% for k in keys %}
+      <tr data-id="{{ k.id }}">
+        <td><input type="hidden" name="ids" value="{{ k.id }}"><input type="checkbox" class="cb row-cb"></td>
+        <td><b>{{ k.client or '—' }}</b>{% if k.note %}<div class="usage-sub">{{ k.note }}</div>{% endif %}</td>
+        <td>
+          <span class="key-chip {% if k.slug=='tg' %}tg{% elif k.slug=='osint' %}osint{% endif %}">{{ (k.key or '—')|upper }}</span>
+          <button type="button" class="act-btn" title="Copy" data-copy="{{ k.key }}">📋</button>
+        </td>
+        <td>
+          {% if k.allowed=='all' %}<span class="access-chip">⚡ All APIs</span>
+          {% else %}{% for sl in k.allowed.split(',') if sl %}<span class="access-chip">{{ sl }}</span>{% endfor %}{% endif %}
+        </td>
+        <td>
+          <div class="usage-box">
+            <div class="usage-num">{{ k.total_hits }}</div>
+            <div class="usage-sub">{% if k.usage_mode=='rate_limited' %}{{ k.daily_limit }}/day · {{ k.per_min_limit }}/min{% elif k.usage_mode=='fixed_cap' %}cap {{ k.total_cap }}{% else %}Unlimited{% endif %}</div>
+          </div>
+        </td>
+        <td>
+          <div class="exp-box">
+            {% if k.expires_at %}
+            <div class="exp-date">{{ k.expires_at[:10] }}</div>
+            <div class="exp-left days" data-d="{{ k.expires_at[:10] }}">--d left</div>
+            {% else %}
+            <div class="exp-date" style="font-size:12.5px;color:#4ade80">Lifetime</div>
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          {% if not k.is_active %}
+          <span class="status-badge off"><span class="dot"></span>Off</span>
+          {% elif not k.expires_at or k.expires_at[:10] >= today %}
+          <span class="status-badge live"><span class="dot"></span>Live</span>
+          {% else %}
+          <span class="status-badge expired"><span class="dot"></span>Expired</span>
+          {% endif %}
+        </td>
+        <td style="text-align:right;white-space:nowrap">
+          <div class="actions">
+            <button type="button" class="act-btn" title="View" data-url="/admin/keys/{{ k.id }}">📊</button>
+            <button type="button" class="act-btn" title="Copy" data-copy="{{ k.key }}">📄</button>
+            <button type="button" class="act-btn" title="Edit" data-edit-key data-url="/admin/keys/{{ k.id }}/update" data-client="{{ k.client }}" data-key="{{ k.key }}" data-note="{{ k.note }}" data-allowed="{{ k.allowed }}" data-usage="{{ k.usage_mode }}" data-daily="{{ k.daily_limit }}" data-permin="{{ k.per_min_limit }}" data-cap="{{ k.total_cap }}" data-expires="{{ k.expires_at[:10] if k.expires_at else '' }}">✏️</button>
+            <button type="button" class="act-btn" title="Download" data-url="/admin/keys/{{ k.id }}/download">⬇️</button>
+            <button type="button" class="act-btn del" title="Delete" data-row="delete" data-url="/admin/keys/{{ k.id }}/delete">🗑</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not keys %}
+      <tr><td colspan="8"><div class="empty"><span class="em">🔑</span>No keys found — <b>＋ New key</b> se pehli key banao.</div></td></tr>
+      {% endif %}
+      </tbody>
+    </table>
+  </div>
+</form>
+
+{% include '_key_modal_new.html' %}
+{% include '_key_modal_edit.html' %}
+
+<script>
+  /* days-left helper for Jinja is not available in JS; compute here */
+  function daysBetween(d1, d2){
+    const a = new Date(d1), b = new Date(d2);
+    const diff = Math.ceil((a - b) / (1000*60*60*24));
+    return diff;
+  }
+  document.querySelectorAll('.exp-left').forEach(el=>{
+    const dtext = el.getAttribute('data-d');
+    if(dtext){
+      const d = daysBetween(dtext, '{{ today }}');
+      el.textContent = Math.max(d,0) + 'd left';
+      el.className = 'exp-left days ' + (d>=0 ? 'live' : '');
+    }
+  });
+
+  /* bulk selection */
+  const cbAll = document.getElementById('selAll');
+  const cbs = document.querySelectorAll('.row-cb');
+  const bulkbar = document.getElementById('bulkbar');
+  const bulkCount = document.getElementById('bulkCount');
+  function updateBulk(){
+    const n = document.querySelectorAll('.row-cb:checked').length;
+    bulkbar.style.display = n ? '' : 'none';
+    bulkCount.textContent = n;
+    cbAll.checked = n && n === cbs.length;
+  }
+  cbAll.onclick = () => { cbs.forEach(c => c.checked = cbAll.checked); updateBulk(); };
+  cbs.forEach(c => c.onclick = updateBulk);
+  function clearBulk(){ cbs.forEach(c => c.checked=false); updateBulk(); }
+
+  /* copy */
+  document.addEventListener('click', function(ev){
+    const b = ev.target.closest('.act-btn[data-copy]');
+    if(b){ navigator.clipboard.writeText(b.getAttribute('data-copy')).then(()=>{
+      const o = b.innerHTML; b.innerHTML = '✅'; setTimeout(()=>b.innerHTML=o,1200);
+    }); }
+  });
+</script>
+
+{% endblock %}
