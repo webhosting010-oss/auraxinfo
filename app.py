@@ -1040,6 +1040,42 @@ def keys_bulk():
     conn.commit(); conn.close()
     return jsonify(ok=True)
 
+@app.route("/admin/keys/<int:kid>/download")
+@admin_required
+def key_download(kid):
+    conn = db()
+    k = conn.execute("SELECT * FROM api_keys WHERE id=?", (kid,)).fetchone()
+    conn.close()
+    if not k:
+        flash("Key not found.", "danger")
+        return redirect(url_for("admin_keys"))
+    days, expires_on = remaining_days(k["expires_at"])
+    dev = k["style_developer"] or developer_name()
+    lines = [
+        "AURA OSINT HUB - API Key Details",
+        "=" * 40,
+        f"key:         {k['key']}",
+        f"client:      {k['client'] or '-'}",
+        f"note:        {k['note'] or '-'}",
+        f"access:      {k['allowed']}",
+        f"usage_mode:  {k['usage_mode']}",
+        f"daily_limit: {k['daily_limit']}",
+        f"per_min:     {k['per_min_limit']}",
+        f"total_cap:   {k['total_cap']}",
+        f"total_hits:  {k['total_hits']}",
+        f"expires_on:  {expires_on}" + (f" ({days}d left)" if k['expires_at'] else ""),
+        f"developer:   {dev}",
+        f"created_at:  {k['created_at']}",
+        "",
+        "API examples (apna base URL lagao):",
+        f"GET /api?key={k['key']}&type=pak_info&term=923001234567",
+        f"GET /api?key={k['key']}&type=ip&ip=8.8.8.8",
+        f"GET /api?key={k['key']}&type=osint&term=911234567890",
+    ]
+    txt = "\n".join(lines)
+    return Response(txt, mimetype="text/plain",
+                    headers={"Content-Disposition": f"attachment; filename=api-key-{k['key']}.txt"})
+
 @app.route("/admin/keys/<int:kid>")
 @admin_required
 def key_detail(kid):

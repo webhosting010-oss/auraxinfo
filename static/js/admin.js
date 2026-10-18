@@ -52,12 +52,25 @@ window.openModalId=openModalId; window.closeModal=closeModal;
 /* auto page-open modal via hash e.g. #newKey */
 if(location.hash.startsWith('#m-')){ setTimeout(()=>openModalId(location.hash.slice(3)),60); }
 
-/* ---------- copy ---------- */
+/* ---------- copy (tap-to-copy with fallback + flash) ---------- */
 document.addEventListener('click', e=>{
   const c=e.target.closest('[data-copy]');
-  if(c){
-    navigator.clipboard.writeText(c.dataset.copy).then(()=>toast('Copied: '+c.dataset.copy)).catch(()=>toast('Copy failed',false));
-  }
+  if(!c) return;
+  const done=()=>{
+    toast('Copied: '+c.dataset.copy);
+    c.classList.add('copied');
+    setTimeout(()=>c.classList.remove('copied'),900);
+  };
+  const cv = navigator.clipboard && navigator.clipboard.writeText
+    ? navigator.clipboard.writeText(c.dataset.copy) : Promise.reject();
+  cv.then(done).catch(()=>{
+    const ta=document.createElement('textarea');
+    ta.value=c.dataset.copy; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(); }
+    catch(_){ toast('Copy failed',false); }
+    ta.remove();
+  });
 });
 
 /* =================================================================
@@ -139,7 +152,7 @@ document.addEventListener('click',e=>{
   const form=m.querySelector('form');
   form.action=d.url;
   form['client'].value=d.client||'';
-  form['keyView'].value=d.key||'';
+  const kv=$('#editKeyView'); if(kv) kv.value=d.key||'';
   form['note'].value=d.note||'';
   form['style_developer'].value=d.dev||'';
   form['style_template'].value=d.tpl||'';
@@ -203,6 +216,7 @@ document.addEventListener('click',async e=>{
   if(d.row==='reset'){ await post(d.url,{_t:1}); toast('Hits reset & key re-activated'); setTimeout(()=>location.reload(),350); }
   if(d.row==='delete'){ if(!confirm('Delete this key permanently?'))return; await post(d.url,{_t:1}); toast('Deleted'); setTimeout(()=>location.reload(),350); }
   if(d.row==='extend'){ await post(d.url,{days:30}); toast('Extended +30 days'); setTimeout(()=>location.reload(),350); }
+  if(d.row==='download'){ location.href=d.url; }
   if(d.row==='stat'){ location.href=d.url; }
 });
 

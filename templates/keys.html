@@ -30,9 +30,10 @@
   table.keys-tbl td{padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.03);color:var(--text);font-size:13px;vertical-align:middle}
   table.keys-tbl tr:hover{background:rgba(139,92,246,.04)}
   table.keys-tbl tr.selected{background:rgba(139,92,246,.1)}
-  .key-chip{font-size:11px;font-weight:800;padding:5px 12px;border-radius:999px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.12);color:#c4b5fd;letter-spacing:.01em}
-  .key-chip.tg{color:#a78bfa;border-color:rgba(167,139,250,.3);background:rgba(167,139,250,.12)}
-  .key-chip.osint{color:#a5f3fc;border-color:rgba(165,243,252,.3);background:rgba(165,243,252,.12)}
+  .key-chip{font-size:11px;font-weight:800;padding:5px 12px;border-radius:999px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.12);color:#c4b5fd;letter-spacing:.01em;cursor:pointer;user-select:none;transition:.15s;display:inline-block}
+  .key-chip:hover{border-color:rgba(139,92,246,.65);background:rgba(139,92,246,.2);color:#fff}
+  .key-chip:active{transform:scale(.93)}
+  .key-chip.copied{border-color:rgba(74,222,128,.6);background:rgba(74,222,128,.16);color:#4ade80}
   .access-chip{font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:8px;border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.12);color:#93c5fd;letter-spacing:.01em}
   .usage-box{display:flex;flex-direction:column;gap:2px}
   .usage-num{font-size:13px;font-weight:800;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
@@ -81,12 +82,13 @@
 
 <form id="bulkForm" action="/admin/keys/bulk" method="POST">
   <div class="bulkbar" id="bulkbar" style="display:none">
-    <span class="count"><b id="bulkCount">0</b> selected</span>
+    <span class="count" id="bulkCount">0 selected</span>
     <select id="bulkAction" name="bulk_action" style="width:auto;padding:7px 34px 7px 12px;text-transform:none;font-size:12px">
-      <option>Enable</option>
-      <option>Disable</option>
-      <option>Reset hits</option>
-      <option>Delete</option>
+      <option value="enable">Enable</option>
+      <option value="disable">Disable</option>
+      <option value="reset">Reset hits</option>
+      <option value="extend">Extend +30d</option>
+      <option value="delete">Delete</option>
     </select>
     <button class="btn btn-prime btn-sm" type="submit">Apply</button>
     <button type="button" class="btn btn-ghost btn-sm" onclick="clearBulk()">Clear</button>
@@ -104,8 +106,7 @@
         <td><input type="hidden" name="ids" value="{{ k.id }}"><input type="checkbox" class="cb row-cb"></td>
         <td><b>{{ k.client or '—' }}</b>{% if k.note %}<div class="usage-sub">{{ k.note }}</div>{% endif %}</td>
         <td>
-          <span class="key-chip {% if k.slug=='tg' %}tg{% elif k.slug=='osint' %}osint{% endif %}">{{ (k.key or '—')|upper }}</span>
-          <button type="button" class="act-btn" title="Copy" data-copy="{{ k.key }}">📋</button>
+          <span class="key-chip copyable" data-copy="{{ k.key }}" title="Tap to copy">{{ (k.key or '—')|upper }}</span>
         </td>
         <td>
           {% if k.allowed=='all' %}<span class="access-chip">⚡ All APIs</span>
@@ -138,10 +139,9 @@
         </td>
         <td style="text-align:right;white-space:nowrap">
           <div class="actions">
-            <button type="button" class="act-btn" title="View" data-url="/admin/keys/{{ k.id }}">📊</button>
-            <button type="button" class="act-btn" title="Copy" data-copy="{{ k.key }}">📄</button>
+            <button type="button" class="act-btn" title="View" data-row="stat" data-url="/admin/keys/{{ k.id }}">📊</button>
             <button type="button" class="act-btn" title="Edit" data-edit-key data-url="/admin/keys/{{ k.id }}/update" data-client="{{ k.client }}" data-key="{{ k.key }}" data-note="{{ k.note }}" data-allowed="{{ k.allowed }}" data-usage="{{ k.usage_mode }}" data-daily="{{ k.daily_limit }}" data-permin="{{ k.per_min_limit }}" data-cap="{{ k.total_cap }}" data-expires="{{ k.expires_at[:10] if k.expires_at else '' }}">✏️</button>
-            <button type="button" class="act-btn" title="Download" data-url="/admin/keys/{{ k.id }}/download">⬇️</button>
+            <button type="button" class="act-btn" title="Download details" data-row="download" data-url="/admin/keys/{{ k.id }}/download">⬇️</button>
             <button type="button" class="act-btn del" title="Delete" data-row="delete" data-url="/admin/keys/{{ k.id }}/delete">🗑</button>
           </div>
         </td>
@@ -174,28 +174,14 @@
     }
   });
 
-  /* bulk selection */
-  const cbAll = document.getElementById('selAll');
-  const cbs = document.querySelectorAll('.row-cb');
-  const bulkbar = document.getElementById('bulkbar');
-  const bulkCount = document.getElementById('bulkCount');
-  function updateBulk(){
-    const n = document.querySelectorAll('.row-cb:checked').length;
-    bulkbar.style.display = n ? '' : 'none';
-    bulkCount.textContent = n;
-    cbAll.checked = n && n === cbs.length;
+  /* bulk clear (updateBulk admin.js handle karta hai) */
+  function clearBulk(){
+    document.querySelectorAll('.row-cb').forEach(c => c.checked=false);
+    const cbAll = document.getElementById('selAll');
+    if(cbAll) cbAll.checked = false;
+    const bar = document.getElementById('bulkbar');
+    if(bar) bar.style.display = 'none';
   }
-  cbAll.onclick = () => { cbs.forEach(c => c.checked = cbAll.checked); updateBulk(); };
-  cbs.forEach(c => c.onclick = updateBulk);
-  function clearBulk(){ cbs.forEach(c => c.checked=false); updateBulk(); }
-
-  /* copy */
-  document.addEventListener('click', function(ev){
-    const b = ev.target.closest('.act-btn[data-copy]');
-    if(b){ navigator.clipboard.writeText(b.getAttribute('data-copy')).then(()=>{
-      const o = b.innerHTML; b.innerHTML = '✅'; setTimeout(()=>b.innerHTML=o,1200);
-    }); }
-  });
 </script>
 
 {% endblock %}
