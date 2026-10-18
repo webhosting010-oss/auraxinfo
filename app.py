@@ -558,6 +558,21 @@ def json_out(env, code):
     return Response(json.dumps(env, ensure_ascii=False, indent=2),
                     status=code, mimetype="application/json")
 
+# footer keys jo doosre object mein jaate hain (product style)
+FOOTER_KEYS = ("key_details", "developer", "success", "status_code", "http_status", "message")
+
+def split_output(env):
+    """Product style: pehla object = pure API data, doosra object = key_details/developer/success footer.
+    Output literal:  {data...},\n{key_details...}
+    NOTE: ye ek concatenated two-object stream hai (valid single JSON nahi) —
+    jaise user ke product/consmeers expect karte hain."""
+    foot = {k: env[k] for k in FOOTER_KEYS if k in env}
+    data = {k: v for k, v in env.items() if k not in foot}
+    body = json.dumps(data, ensure_ascii=False, indent=2) + ",\n" + \
+           json.dumps(foot, ensure_ascii=False, indent=2)
+    return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
+                    mimetype="application/json")
+
 TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip")
 def first_term():
     for t in TERMS:
@@ -744,7 +759,8 @@ def serve_api(slug):
     preview = json.dumps(envelope, ensure_ascii=False)[:600]
     add_log(key_row, slug, term, 200, True, dt,
             ("key capped & disabled" if hit["capped"] else ("cache hit" if is_cached else "ok")), preview)
-    return json_out(envelope, 200)
+    # product style: data-object, phir },\n{ key_details/developer/success footer-object
+    return split_output(envelope)
 
 # -------------------------------------------------------------- public pages
 @app.route("/")
