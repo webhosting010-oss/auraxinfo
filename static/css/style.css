@@ -1169,16 +1169,17 @@ body::after{
   box-shadow:0 4px 14px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.12);
 }
 
-/* ---- MODALS ---- */
+/* ---- MODALS ----
+   NOTE: nested backdrop-filter (.modal ke andar .modal-bg ka blur)
+   Android Chrome me black-screen render karta hai — isliye modal pe
+   backdrop-filter nahi, solid-ish background use karo. */
 .modal-bg{
   background:rgba(2,3,6,0.82) !important;
-  backdrop-filter:blur(20px) saturate(1.4) !important;
-  -webkit-backdrop-filter:blur(20px) saturate(1.4) !important;
+  backdrop-filter:blur(10px) saturate(1.3) !important;
+  -webkit-backdrop-filter:blur(10px) saturate(1.3) !important;
 }
 .modal{
-  background:rgba(12,15,24,0.78) !important;
-  backdrop-filter:blur(32px) saturate(1.8) !important;
-  -webkit-backdrop-filter:blur(32px) saturate(1.8) !important;
+  background:linear-gradient(180deg,rgba(21,26,36,.97),rgba(11,13,17,.98)) !important;
   border:1px solid rgba(99,179,253,.2) !important;
   box-shadow:0 32px 100px rgba(0,0,0,.8),
              0 0 0 1px rgba(255,255,255,.05) inset,
@@ -1482,10 +1483,9 @@ details:hover{border-color:rgba(99,179,253,.25) !important}
   -moz-osx-font-smoothing: grayscale;
 }
 
-body, .layout, .sidebar, .topbar, .card, .btn, .modal, .modal-bg, .stat {
-  transform: translateZ(0);
+/* modal pe heavy GPU layer hacks mat lagao (mobile black-screen bug) */
+body, .layout, .sidebar, .topbar, .card, .btn, .stat {
   backface-visibility: hidden;
-  perspective: 1000px;
 }
 
 .btn, .act-btn, .kf-tab, .side-link, .modal-x, .switch-input {
