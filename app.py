@@ -124,6 +124,13 @@ CREATE TABLE IF NOT EXISTS settings(
   k TEXT PRIMARY KEY,
   v TEXT
 );
+CREATE TABLE IF NOT EXISTS cache(
+  slug TEXT NOT NULL,
+  term TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT,
+  PRIMARY KEY(slug, term)
+);
 """
 
 def init_db():
@@ -149,6 +156,20 @@ def init_db():
     conn.execute(
         "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
         "term_param='username' WHERE slug='tg' AND url_template LIKE '%username={term}%'")
+    # migration: ip endpoint (ip-api.com) — purane DB me bhi add ho jaye
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ip'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("ip", "IP Info", "🌐",
+             "http://ip-api.com/json/{term}?fields=status,message,continent,continentCode,country,countryCode,"
+             "region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,"
+             "reverse,mobile,proxy,hosting",
+             "", "ip", 5, now_iso()))
+    # migration: osint upstream naye server pe shift ho gaya (l34k-osint.onrender.com ab HTML deta hai)
+    conn.execute(
+        "UPDATE endpoints SET url_template='https://deeposint.felixrdx.xyz/search?key={upstream_key}&query={term}' "
+        "WHERE slug='osint' AND url_template LIKE '%l34k-osint%'")
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -186,6 +207,55 @@ def get_setting(k, d=""):
 
 def developer_name():
     return get_setting("developer", DEFAULT_DEVELOPER) or DEFAULT_DEVELOPER
+
+# -------------------------------------------------------------------- cache
+def cache_ttl_minutes():
+    """default 720 min (12h). 0 = cache off. Settings table me 'cache_ttl' key se control karo."""
+    try:
+        return int(get_setting("cache_ttl", "720") or 0)
+    except Exception:
+        return 720
+
+def cache_get(slug, term):
+    conn = db()
+    row = conn.execute("SELECT payload, created_at FROM cache WHERE slug=? AND term=?",
+                       (slug, term)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        t = datetime.strptime(str(row["created_at"])[:19], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() - t <= timedelta(minutes=cache_ttl_minutes()):
+            return json.loads(row["payload"])
+    except Exception:
+        pass
+    return None
+
+def cache_put(slug, term, payload):
+    try:
+        conn = db()
+        conn.execute(
+            "INSERT INTO cache(slug,term,payload,created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(slug,term) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at",
+            (slug, term, json.dumps(payload, ensure_ascii=False), now_iso()))
+        conn.commit(); conn.close()
+    except Exception:
+        pass
+
+def upstream_error_text(payload):
+    """Upstream apna error bhejta hai ({status:false, error:{code,title,message}}) -> readable text, warna None."""
+    if not isinstance(payload, dict):
+        return None
+    err = payload.get("error")
+    if payload.get("status") is False and isinstance(err, dict):
+        title = (err.get("title") or "").strip()
+        msg = (err.get("message") or "").strip()
+        txt = (title + (" — " + msg if msg else "")).strip()
+        code = (err.get("code") or err.get("CODE") or "").upper()
+        if "KEY" in code or "KEY" in txt.upper():
+            txt += " (upstream key invalid/expired — Admin > Endpoints me naya key dalo)"
+        return txt or "upstream rejected the request"
+    return None
 
 # ------------------------------------------------------------------- helpers
 def get_endpoint(slug):
@@ -347,6 +417,17 @@ def normalize_tg(upstream, term):
             res["tg_id"] = str(upstream.get("tg_id") or term)
     return {"result": res, "status": bool(res["success"]), "cached": False}
 
+def normalize_pak(upstream):
+    """numpak upstream (sim-info-api) -> clean {count, records} style.
+    Upstream ka apna developer/telegram/channel branding hata do —
+    envelope me sirf count + records + hamara footer jaye."""
+    if not isinstance(upstream, dict):
+        return {"count": 0, "records": []}
+    records = upstream.get("records")
+    if not isinstance(records, list):
+        records = upstream.get("data") if isinstance(upstream.get("data"), list) else []
+    return {"count": len(records), "records": records}
+
 def reorder_tg(env):
     """key_details ko 'result' ke turant baad rakho (sample style)."""
     if "result" in env and "key_details" in env:
@@ -432,7 +513,7 @@ def json_out(env, code):
     return Response(json.dumps(env, ensure_ascii=False, indent=2),
                     status=code, mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -456,15 +537,26 @@ def fetch_upstream(ep, term):
     req = urllib.request.Request(url, headers=headers)
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=28) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read().decode("utf-8", "replace")
         dt = round((time.time() - t0) * 1000, 1)
         try:
             return json.loads(raw), dt, None
         except Exception:
-            return {"raw": raw[:800]}, dt, None
+            # upstream ne JSON ki jagah HTML/text bheja (site moved / error page)
+            return None, dt, "upstream returned non-JSON response (site changed or down)"
     except urllib.error.HTTPError as e:
-        return None, round((time.time() - t0) * 1000, 1), f"upstream HTTP {e.code}"
+        dt = round((time.time() - t0) * 1000, 1)
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        try:
+            parsed_body = json.loads(body)
+        except Exception:
+            parsed_body = None
+        uerr = upstream_error_text(parsed_body) if parsed_body is not None else None
+        return None, dt, uerr or f"upstream HTTP {e.code}"
     except Exception as e:
         return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
 
@@ -476,8 +568,9 @@ TYPE_MAP = {
     "pak_info": "numpak", "pak": "numpak", "numpak": "numpak", "pakistan_sim": "numpak",
     "sim_info": "numpak", "paknum": "numpak",
     "osint": "osint", "osint_search": "osint", "multi": "osint",
+    "ip": "ip", "ip_info": "ip", "ipinfo": "ip", "ip_lookup": "ip", "ipinfo2": "ip",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip"
 
 @app.route("/api")
 def api_typed():
@@ -550,16 +643,36 @@ def serve_api(slug):
                                   f"per_min={key_row['per_min_limit']}")
             return json_out(env, code)
 
-    # ---- upstream
-    payload, dt, err = fetch_upstream(ep, term)
-    if payload is None:
-        env, code = api_error(key_row, slug, 502, "Upstream failure",
-                              err or "unknown upstream error")
-        return json_out(env, code)
+    # ---- upstream (cache pehle, warna live fetch)
+    ttl = cache_ttl_minutes()
+    cached_payload = cache_get(slug, term) if ttl > 0 else None
+    is_cached = cached_payload is not None
+
+    if is_cached:
+        payload, dt, err = cached_payload, 0.0, None
+    else:
+        payload, dt, err = fetch_upstream(ep, term)
+        if payload is None:
+            env, code = api_error(key_row, slug, 502, "Upstream failure",
+                                  err or "unknown upstream error")
+            return json_out(env, code)
+        uerr = upstream_error_text(payload)
+        if uerr:
+            env, code = api_error(key_row, slug, 502, "Upstream error", uerr)
+            return json_out(env, code)
 
     # ---- success path
-    if slug == "tg":
-        payload = normalize_tg(payload, term)
+    if not is_cached:
+        if slug == "tg":
+            payload = normalize_tg(payload, term)
+        if slug == "numpak":
+            payload = normalize_pak(payload)
+        if slug == "ip" and isinstance(payload, dict) and payload.get("status") == "fail":
+            env, code = api_error(key_row, slug, 404, "IP not found",
+                                  (payload.get("message") or "upstream could not resolve this IP"))
+            return json_out(env, code)
+        if ttl > 0 and isinstance(payload, dict) and payload:
+            cache_put(slug, term, payload)
     core = build_envelope(payload, {**key_row,
                                     "today_hits": used_today})
     if slug == "tg":
@@ -568,7 +681,7 @@ def serve_api(slug):
     envelope = apply_key_style(core, key_row, 200)
     preview = json.dumps(envelope, ensure_ascii=False)[:600]
     add_log(key_row, slug, term, 200, True, dt,
-            ("key capped & disabled" if hit["capped"] else "ok"), preview)
+            ("key capped & disabled" if hit["capped"] else ("cache hit" if is_cached else "ok")), preview)
     return json_out(envelope, 200)
 
 # -------------------------------------------------------------- public pages
