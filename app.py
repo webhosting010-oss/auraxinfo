@@ -48,6 +48,7 @@ def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")   # fast commits (WAL ke saath safe)
     return conn
 
 SCHEMA = """
@@ -202,16 +203,53 @@ def today_str():
     return datetime.now().strftime("%Y-%m-%d")
 
 # ----------------------------------------------------------------- settings
+# in-memory settings cache (60s) — har request pe DB conn bachao
+_SETTINGS_MEM = {}
+_SETTINGS_MEM_TTL = 60
+
 def set_setting(k, v):
     conn = db()
     conn.execute("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
     conn.commit(); conn.close()
+    _SETTINGS_MEM[k] = (v, time.time())
 
 def get_setting(k, d=""):
+    hit = _SETTINGS_MEM.get(k)
+    if hit:
+        val, ts = hit
+        if time.time() - ts < _SETTINGS_MEM_TTL:
+            return val
     conn = db()
     row = conn.execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
     conn.close()
-    return row["v"] if row else d
+    if row:
+        _SETTINGS_MEM[k] = (row["v"], time.time())
+        return row["v"]
+    return d
+
+# ------------------------------------------------------------ L1 memo cache
+# in-process response cache (15 min, max 400) — DB cache iska L2 hai
+_MEMCACHE = {}
+_MEMCACHE_TTL = 900
+_MEMCACHE_MAX = 400
+
+def memcache_get(k):
+    v = _MEMCACHE.get(k)
+    if not v:
+        return None
+    payload, ts = v
+    if time.time() - ts > _MEMCACHE_TTL:
+        _MEMCACHE.pop(k, None)
+        return None
+    return payload
+
+def memcache_put(k, payload):
+    try:
+        if len(_MEMCACHE) >= _MEMCACHE_MAX:
+            _MEMCACHE.pop(next(iter(_MEMCACHE)))
+        _MEMCACHE[k] = (payload, time.time())
+    except Exception:
+        pass
 
 def developer_name():
     return get_setting("developer", DEFAULT_DEVELOPER) or DEFAULT_DEVELOPER
@@ -320,17 +358,16 @@ def register_hit(key_row):
     mh += 1
     capped = False
     conn = db()
-    conn.execute(
+    k = conn.execute(
         "UPDATE api_keys SET today_hits=?, today_date=?, minute_hits=?, minute_start=?, total_hits=total_hits+1 "
-        "WHERE id=?", (th, today, mh, epoch, key_row["id"]))
-    k = conn.execute("SELECT total_hits, total_cap, usage_mode, is_active FROM api_keys WHERE id=?",
-                     (key_row["id"],)).fetchone()
-    if (k["usage_mode"] == "fixed_cap" and k["total_cap"] > 0
+        "WHERE id=? RETURNING total_hits, total_cap, usage_mode, is_active",
+        (th, today, mh, epoch, key_row["id"])).fetchone()
+    if (k and k["usage_mode"] == "fixed_cap" and k["total_cap"] > 0
             and k["total_hits"] >= k["total_cap"] and k["is_active"] == 1):
         conn.execute("UPDATE api_keys SET is_active=0 WHERE id=?", (key_row["id"],))
         capped = True
     conn.commit(); conn.close()
-    return {"total_hits": k["total_hits"], "capped": capped}
+    return {"total_hits": k["total_hits"] if k else key_row["total_hits"], "capped": capped}
 
 def add_log(key_row, endpoint, term, status_code, success, rtime, message="", preview=""):
     conn = db()
@@ -651,10 +688,17 @@ def serve_api(slug):
                                   f"per_min={key_row['per_min_limit']}")
             return json_out(env, code)
 
-    # ---- upstream (cache pehle, warna live fetch)
+    # ---- upstream (L1 memo -> L2 db cache -> live fetch)
     ttl = cache_ttl_minutes()
-    cached_payload = cache_get(slug, term) if ttl > 0 else None
-    is_cached = cached_payload is not None
+    ck = slug + "|" + term
+    cached_payload = memcache_get(ck) if ttl > 0 else None
+    if cached_payload is not None:
+        is_cached = True
+    else:
+        cached_payload = cache_get(slug, term) if ttl > 0 else None
+        is_cached = cached_payload is not None
+        if is_cached:
+            memcache_put(ck, cached_payload)   # L2 hit -> L1 me bhi dalo
 
     if is_cached:
         payload, dt, err = cached_payload, 0.0, None
@@ -681,6 +725,7 @@ def serve_api(slug):
             return json_out(env, code)
         if ttl > 0 and isinstance(payload, dict) and payload:
             cache_put(slug, term, payload)
+            memcache_put(ck, payload)
     if slug == "ip" and isinstance(payload, dict):
         # ip-api "query" field ko clean "ip" field me rename karo (top pe) — cached pe bhi chale
         if "ip" not in payload and isinstance(payload.get("query"), str):
