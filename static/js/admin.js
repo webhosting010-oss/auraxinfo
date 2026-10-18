@@ -112,16 +112,21 @@ $$('select[name=validity]').forEach(sel=>{
 });
 
 /* open create modal */
-const newKeyBtn=$('#newKeyBtn');
-if(newKeyBtn) newKeyBtn.addEventListener('click',()=>{
-  const m=$('.modal-bg#m-new');
-  // reset all
-  const form=m.querySelector('form'); form?.reset();
-  $$('.seg.mode-access button[data-v=all]',m).forEach(x=>x.click());
-  $$('.seg.mode-usage button[data-v=unlimited]',m).forEach(x=>x.click());
-  $$('.row-custom-date',m).forEach(x=>x.style.display='none');
-  $$('.switch-input',m).forEach(i=>{i.checked=false;i.dispatchEvent(new Event('change'))});
-  m.querySelector('form').action=m.querySelector('form').action; // create action preserved
+document.addEventListener('click', e => {
+  const btn = e.target.closest('#newKeyBtn');
+  if(!btn) return;
+  e.preventDefault();
+  const m = document.getElementById('m-new');
+  if(!m) return;
+  const form = m.querySelector('form');
+  if(form) form.reset();
+  $$('.seg.mode-access button[data-v=all]', m).forEach(x => x.click());
+  $$('.seg.mode-usage button[data-v=unlimited]', m).forEach(x => x.click());
+  $$('.row-custom-date', m).forEach(x => x.style.display = 'none');
+  $$('.switch-input', m).forEach(i => {
+    i.checked = false;
+    i.dispatchEvent(new Event('change'));
+  });
   openModal('#m-new');
 });
 

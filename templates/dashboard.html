@@ -111,4 +111,22 @@
   <p class="sub" style="margin-top:10px">Iska text un endpoints pe dikhega jo dashboard → Endpoints se OFF kiye gaye hain.</p>
 </div>
 
+{% include '_key_modal_new.html' %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  var btn = document.getElementById('newKeyBtn');
+  if(btn){
+    btn.onclick = function(e){
+      e.preventDefault();
+      var m = document.getElementById('m-new');
+      if(m){
+        m.classList.add('show');
+        document.body.style.overflow = 'hidden';
+      }
+    };
+  }
+});
+</script>
+
 {% endblock %}

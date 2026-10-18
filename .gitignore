@@ -6,3 +6,6 @@ __pycache__/
 cloudflared.exe
 data/osint_hub.db*
 data/secret.key
+
+railway.exe
+railway_cli.zip

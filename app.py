@@ -25,7 +25,7 @@ SECRET_FILE = os.path.join(DATA_DIR, "secret.key")
 PORT = int(os.environ.get("PORT", "5005"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 
-DEFAULT_DEVELOPER = os.environ.get("DEVELOPER", "@Yourr_aura")
+DEFAULT_DEVELOPER = os.environ.get("DEVELOPER", "@auraxinfo")
 ADMIN_USER = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "aura@9751")
 

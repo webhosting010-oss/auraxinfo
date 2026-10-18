@@ -73,6 +73,9 @@
         <input type="search" name="q" value="{{ q or '' }}" placeholder="Search…">
       </form>
     </div>
+    {% if session.get('admin_id') %}
+    <button type="button" class="btn btn-prime" id="newKeyBtn" style="white-space:nowrap">＋ New key</button>
+    {% endif %}
   </div>
 </div>
 
