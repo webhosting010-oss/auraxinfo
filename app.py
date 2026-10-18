@@ -719,6 +719,10 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
+        if slug == "osint" and isinstance(payload, dict):
+            # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
+            payload["response_time_ms"] = int(round(dt))
+            payload["usage_tracked"] = True
         if slug == "ip" and isinstance(payload, dict) and payload.get("status") == "fail":
             env, code = api_error(key_row, slug, 404, "IP not found",
                                   (payload.get("message") or "upstream could not resolve this IP"))
