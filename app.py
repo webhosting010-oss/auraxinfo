@@ -164,12 +164,16 @@ def init_db():
             ("ip", "IP Info", "🌐",
              "http://ip-api.com/json/{term}?fields=status,message,continent,continentCode,country,countryCode,"
              "region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,"
-             "reverse,mobile,proxy,hosting",
+             "reverse,mobile,proxy,hosting,query",
              "", "ip", 5, now_iso()))
     # migration: osint upstream naye server pe shift ho gaya (l34k-osint.onrender.com ab HTML deta hai)
     conn.execute(
         "UPDATE endpoints SET url_template='https://deeposint.felixrdx.xyz/search?key={upstream_key}&query={term}' "
         "WHERE slug='osint' AND url_template LIKE '%l34k-osint%'")
+    # migration: ip endpoint me 'query' field add (response me clean 'ip' field ke liye)
+    conn.execute(
+        "UPDATE endpoints SET url_template=replace(url_template, 'proxy,hosting', 'proxy,hosting,query') "
+        "WHERE slug='ip' AND url_template LIKE '%hosting' AND url_template NOT LIKE '%query'")
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -673,6 +677,11 @@ def serve_api(slug):
             return json_out(env, code)
         if ttl > 0 and isinstance(payload, dict) and payload:
             cache_put(slug, term, payload)
+    if slug == "ip" and isinstance(payload, dict):
+        # ip-api "query" field ko clean "ip" field me rename karo (top pe) — cached pe bhi chale
+        if "ip" not in payload and isinstance(payload.get("query"), str):
+            q = payload.pop("query")
+            payload = {"ip": q, **payload}
     core = build_envelope(payload, {**key_row,
                                     "today_hits": used_today})
     if slug == "tg":
