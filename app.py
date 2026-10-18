@@ -166,10 +166,14 @@ def init_db():
              "region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,"
              "reverse,mobile,proxy,hosting,query",
              "", "ip", 5, now_iso()))
-    # migration: osint upstream naye server pe shift ho gaya (l34k-osint.onrender.com ab HTML deta hai)
+    # migration: osint upstream naye Deep OSINT developer API pe shift
     conn.execute(
-        "UPDATE endpoints SET url_template='https://deeposint.felixrdx.xyz/search?key={upstream_key}&query={term}' "
-        "WHERE slug='osint' AND url_template LIKE '%l34k-osint%'")
+        "UPDATE endpoints SET url_template='https://deeposint.felixrdx.xyz/api/developer/Cyb3rB4nn3r/?key={upstream_key}&query={term}' "
+        "WHERE slug='osint' AND url_template NOT LIKE '%api/developer/Cyb3rB4nn3r/%'")
+    # migration: osint upstream key naya (purana naye server pe invalid hai)
+    conn.execute(
+        "UPDATE endpoints SET upstream_key='3a2a165a22b94bf6657eb8b491a267b2' "
+        "WHERE slug='osint' AND (upstream_key='' OR upstream_key IN ('028d9205ebab1366bd43d8835e1f7cf9','numcudt'))")
     # migration: ip endpoint me 'query' field add (response me clean 'ip' field ke liye)
     conn.execute(
         "UPDATE endpoints SET url_template=replace(url_template, 'proxy,hosting', 'proxy,hosting,query') "
