@@ -157,6 +157,8 @@ def init_db():
              "", "ifsc", 8),
             ("insta",   "Instagram Info",   "📸", "https://sahilxher.madewith.me/api/insta?key={upstream_key}&q={term}",
              "FELIX69", "username", 9),
+            ("snap",    "Snapchat Info",    "👻", "https://www.snapchat.com/add/{term}",
+             "", "username", 10),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -220,6 +222,14 @@ def init_db():
             ("insta", "Instagram Info", "📸",
              "https://sahilxher.madewith.me/api/insta?key={upstream_key}&q={term}",
              "FELIX69", "username", 9, now_iso()))
+    # migration: snap endpoint (hamara apna snapchat scraper — zero upstream)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='snap'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("snap", "Snapchat Info", "👻",
+             "https://www.snapchat.com/add/{term}",
+             "", "username", 10, now_iso()))
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -636,6 +646,44 @@ def fetch_insta_with_backup(ep, term):
         payload["data_source"] = "sahilxher insta API"
     return payload, dt, err
 
+# ------------------------------------------------------------ snapchat info
+def snap_payload_from_html(raw, term):
+    """Snapchat public add-page HTML -> user ke sample-style payload.
+    og:image EXACT wahi web-capture preview URL hota hai jo unke API me tha."""
+    user = term.strip().lstrip("@")
+    og_img = re.search(r'<meta[^>]*property="og:image" content="([^"]+)"', raw)
+    title_m = re.search(r'<title[^>]*>([^<]*)</title>', raw)
+    if not og_img or not title_m:
+        return None
+    pic = og_img.group(1).replace("&amp;", "&")
+    title = (title_m.group(1).replace("&amp;", "&")
+             .replace("&quot;", '"').replace("&#039;", "'").replace("&#39;", "'"))
+    m = re.match(r'^(.*?)(?:\s*\(@' + re.escape(user) + r'\))?(?:\s*\|.*)?$', title)
+    full_name = (m.group(1).strip() if m and m.group(1).strip() else user)
+    verified = (bool(re.search(r'"(?:isVerified|verified)"\s*:\s*true', raw))
+                or "Verified account" in raw)
+    story_m = re.search(r'"(?:storyCount|snap_count)"\s*:\s*(\d+)', raw)
+    return {
+        "username": user,
+        "exists": True,
+        "description": f"{full_name} is on Snapchat! (@{user})",
+        "has_stories": bool(story_m),  # public page pe public stories ka data hi nahi hota
+        "story_count": int(story_m.group(1)) if story_m else 0,
+        "is_verified": verified,
+        "profile_completeness_score": 50,
+        "profile_picture_url": pic,
+        "profile_picture_info": {
+            "direct_url": pic,
+            "formats": ["PNG", "JPEG", "WEBP"],
+            "opens_in_browser": True,
+            "preview_url": pic,
+        },
+        "profile_url": "https://www.snapchat.com/add/" + user,
+        "snapcode_url": ("https://app.snapchat.com/web/deeplink/snapcode?username="
+                         + user + "&type=PNG"),
+        "full_name": full_name,
+    }
+
 # ------------------------------------------------------------------- helpers
 def get_endpoint(slug):
     conn = db()
@@ -906,7 +954,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -926,7 +974,8 @@ def fetch_upstream(ep, term):
            .replace("{upstream_key}", urllib.parse.quote(ep["upstream_key"] or ""))
            .replace("{param}", resolve_term_param(ep, term))
            .replace("{term}", urllib.parse.quote(term)))
-    headers = {"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)", "Accept": "application/json"}
+    headers = {"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)", "Accept": "application/json",
+               "Accept-Language": "en-US,en;q=0.9"}
     req = urllib.request.Request(url, headers=headers)
     t0 = time.time()
     timeout = 20 if ep["slug"] in ("insta", "osint") else 15
@@ -934,6 +983,11 @@ def fetch_upstream(ep, term):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
         dt = round((time.time() - t0) * 1000, 1)
+        if ep["slug"] == "snap":
+            # snapchat public page HTML -> hamara scraper payload deta hai
+            spayload = snap_payload_from_html(raw, term)
+            return (spayload, dt, None) if spayload else \
+                   (None, dt, "Snapchat profile not found")
         if ep["slug"] == "pincode":
             # pincode page HTML deta hai (Livewire) — chunks parse karke records nikaalo
             recs = parse_pincode_html(raw)
@@ -972,8 +1026,9 @@ TYPE_MAP = {
     "pincode": "pincode", "pin": "pincode", "pin_code": "pincode", "pincode_search": "pincode", "pinsearch": "pincode",
     "ifsc": "ifsc", "ifsc_info": "ifsc", "ifsc_search": "ifsc", "ifsc_lookup": "ifsc", "bank_branch": "ifsc",
     "insta": "insta", "ig": "insta", "instagram": "insta", "insta_info": "insta", "instainfo": "insta", "instagram_info": "insta",
+    "snap": "snap", "snapchat": "snap", "snap_info": "snap", "snapchat_info": "snap", "snapchat_lookup": "snap",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap"
 
 @app.route("/api")
 def api_typed():
@@ -1078,6 +1133,10 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 404, "IFSC not found",
                                   "invalid or unknown IFSC code: " + term)
             return json_out(env, code)
+        if slug == "snap" and ("not found" in (err or "").lower() or "404" in (err or "")):
+            env, code = api_error(key_row, slug, 404, "Snapchat user not found",
+                                  "no Snapchat profile found for: " + term)
+            return json_out(env, code)
         env, code = api_error(key_row, slug, 502, "Upstream failure",
                               err or "unknown upstream error")
         return json_out(env, code)
@@ -1103,7 +1162,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
