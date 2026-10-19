@@ -538,6 +538,99 @@ def enrich_ifsc(rp, term):
         "banking_hours": banking_hours(),
     }
 
+# --------------------------------------------------------------- insta fallback
+_IG_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+_IG_SUFFIX = {"k": 1_000, "m": 1_000_000}
+
+def ig_num(token):
+    """686M / 8,620 / 308 jaise tokens ko actual number me badalta hai."""
+    t = token.strip().replace(",", "")
+    m = re.match(r"^([\d.]+)([kKmM]?)$", t)
+    if not m:
+        return None
+    try:
+        v = float(m.group(1))
+    except ValueError:
+        return None
+    suf = _IG_SUFFIX.get(m.group(2).lower(), 1)
+    return int(round(v * suf))
+
+def scrape_ig_profile(term):
+    """Instagram public profile page ke meta tags se fallback info (sahil-style payload).
+    Notes: pk/posts list anonymous disabled hote hain — partial data milta hai."""
+    user = term.strip().lstrip("@")
+    url = "https://www.instagram.com/" + urllib.parse.quote(user, "") + "/"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _IG_UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError:
+        return None, round((time.time() - t0) * 1000, 1), "upstream HTTP error"
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
+    dt = round((time.time() - t0) * 1000, 1)
+
+    if raw.lstrip().lower().startswith("<!doctype html><html") and "Sorry, this page isn't available" in raw:
+        return None, dt, "profile not found"
+    og_desc = re.search(r'<meta property="og:description" content="([^"]*)"', raw)
+    og_title = re.search(r'<meta property="og:title" content="([^"]*)"', raw)
+    if not og_desc:
+        return None, dt, "profile meta unavailable (rate-limited)"
+    desc = (og_desc.group(1)).replace("&amp;", "&").replace("&quot;", '"')
+    full_name, m1 = "", re.search(r'^(.*?)\s*\(@'+re.escape(user)+r'\)', (og_title.group(1) if og_title else ""))
+    if m1:
+        full_name = m1.group(1).replace("&quot;", '"').replace("&amp;", "&")
+    followers = following = posts = None
+    for mm in re.finditer(r"([\d.,]+\s*[kKmM]?)\s*(followers|following|posts)", desc):
+        tok, target = mm.group(1), mm.group(2)
+        n = ig_num(tok)
+        if n is None:
+            continue
+        if target == "followers" and followers is None: followers = n
+        elif target == "following" and following is None: following = n
+        elif target == "posts" and posts is None: posts = n
+    pic = re.search(r'<meta property="og:image" content="([^"]*)"', raw)
+    bio_for_media = re.search(r'<meta name="description"[^>]*content="([^"]*)"', raw)
+    biography = desc if (m1 is None and og_desc) else (bio_for_media.group(1) if bio_for_media else desc)
+    return ({
+        "username": user,
+        "full_name": full_name or user,
+        "biography": biography.replace("&amp;", "&").replace("&quot;", '"'),
+        "follower_count": followers or 0,
+        "following_count": following or 0,
+        "media_count": posts or 0,
+        "followers": followers or 0,
+        "following": following or 0,
+        "posts_count": posts or 0,
+        "is_private": ("This account is private" in raw) or ('"is_private":true' in raw),
+        "is_verified": '"is_verified":true' in raw,
+        "profile_pic_url": (pic.group(1).replace("&amp;", "&") if pic else ""),
+        "bio_links": [],
+        "posts": [],
+        "fetched_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "hd_profile_pic_url": (pic.group(1).replace("&amp;", "&") if pic else ""),
+        "leakdata": [{"name": "Instagram"}],
+    }), dt, None
+
+def fetch_insta_with_backup(ep, term):
+    """Primary sahilxher; fail/slow/not-found pe hamara IG profile-meta fallback."""
+    payload, dt, err = fetch_upstream(ep, term)
+    ok = payload is not None
+    if ok and isinstance(payload, dict) and (
+            payload.get("success") is False or payload.get("status") is False):
+        ok = False
+    if not ok:
+        fb, fdt, ferr = scrape_ig_profile(term)
+        if fb is not None:
+            return fb, round(dt + fdt, 1), None
+    return payload, dt, err
+
 # ------------------------------------------------------------------- helpers
 def get_endpoint(slug):
     conn = db()
@@ -968,6 +1061,9 @@ def serve_api(slug):
 
     if is_cached:
         payload, dt, err = cached_payload, 0.0, None
+    elif slug == "insta":
+        # primary sahilxher + backup IG-meta scraper (upstream off ho to bhi response)
+        payload, dt, err = fetch_insta_with_backup(ep, term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
         if payload is None:
