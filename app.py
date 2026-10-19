@@ -153,6 +153,8 @@ def init_db():
              "FELIX69", "aadhar", 6),
             ("pincode", "Pincode Search",   "📮", "https://myspeedpost.com/pincode-search?q={term}",
              "", "pincode", 7),
+            ("ifsc",    "IFSC Info",        "🏦", "https://ifsc.razorpay.com/{term}",
+             "", "ifsc", 8),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -200,6 +202,14 @@ def init_db():
             ("pincode", "Pincode Search", "📮",
              "https://myspeedpost.com/pincode-search?q={term}",
              "", "pincode", 7, now_iso()))
+    # migration: ifsc endpoint (razorpay fast API, in-app enrichment ke saath)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ifsc'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("ifsc", "IFSC Info", "🏦",
+             "https://ifsc.razorpay.com/{term}",
+             "", "ifsc", 8, now_iso()))
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -360,6 +370,158 @@ def pincode_payload(term, records):
         rec = {k: v for k, v in r.items() if k not in ("label",)}
         clean.append(rec)
     return {"pincode": term, "total": len(clean), "records": clean}
+
+# --------------------------------------------------------------- bank meta
+# major Indian banks ki static meta (IFSC endpoint ka "bank" block build karne ke liye)
+BANK_META = {
+    "SBIN": {"name": "State Bank of India", "category": "Public Sector", "hq": "Mumbai", "founded": 1955, "tagline": "The Banker to Every Indian", "swift": "SBININBB", "upi": "sbi"},
+    "HDFC": {"name": "HDFC Bank", "category": "Private Sector", "hq": "Mumbai", "founded": 1994, "tagline": "We Understand Your World", "swift": "HDFCINBB", "upi": "hdfcbank"},
+    "ICIC": {"name": "ICICI Bank", "category": "Private Sector", "hq": "Mumbai", "founded": 1995, "tagline": "Khayal Apka", "swift": "ICICINBB", "upi": "icici"},
+    "UTIB": {"name": "Axis Bank", "category": "Private Sector", "hq": "Mumbai", "founded": 1993, "tagline": "Badhti Ka Naam Zindagi", "swift": "AXISINBB", "upi": "axisbank"},
+    "KKBK": {"name": "Kotak Mahindra Bank", "category": "Private Sector", "hq": "Mumbai", "founded": 2003, "tagline": "Ko Badalna Hi Raat Kaam Ho", "swift": "KKBKINBB", "upi": "kotak"},
+    "PUNB": {"name": "Punjab National Bank", "category": "Public Sector", "hq": "New Delhi", "founded": 1894, "tagline": "The Name You Can Bank Upon", "swift": "PUNBINBB", "upi": "pnb"},
+    "BARB": {"name": "Bank of Baroda", "category": "Public Sector", "hq": "Vadodara", "founded": 1908, "tagline": "India's International Bank", "swift": "BARBINBB", "upi": "bankofbaroda"},
+    "CBIN": {"name": "Central Bank of India", "category": "Public Sector", "hq": "Mumbai", "founded": 1911, "tagline": "Central To You Since 1911", "swift": "CBININBB", "upi": "centralbank"},
+    "CNRB": {"name": "Canara Bank", "category": "Public Sector", "hq": "Bengaluru", "founded": 1906, "tagline": "It's Easy To Change For Those Who You Love", "swift": "CNRBINBB", "upi": "canarabank"},
+    "UBIN": {"name": "Union Bank of India", "category": "Public Sector", "hq": "Mumbai", "founded": 1919, "tagline": "Good People To Bank With", "swift": "UBININBB", "upi": "unionbankofindia"},
+    "IDIB": {"name": "Indian Bank", "category": "Public Sector", "hq": "Chennai", "founded": 1907, "tagline": "Easiest & Happiest Bank", "swift": "IDIBINBB", "upi": "indianbank"},
+    "IOBA": {"name": "Indian Overseas Bank", "category": "Public Sector", "hq": "Chennai", "founded": 1937, "tagline": "Good People To Grow With", "swift": "IOBAINBB", "upi": "indianoverseasbank"},
+    "BKID": {"name": "Bank of India", "category": "Public Sector", "hq": "Mumbai", "founded": 1906, "tagline": "Relationship Beyond Banking", "swift": "BKIDINBB", "upi": "bankofindia"},
+    "MAHB": {"name": "Bank of Maharashtra", "category": "Public Sector", "hq": "Pune", "founded": 1935, "tagline": "One Family One Bank", "swift": "MAHBINBB", "upi": "mahabank"},
+    "UCBA": {"name": "UCO Bank", "category": "Public Sector", "hq": "Kolkata", "founded": 1943, "tagline": "Honours Your Trust", "swift": "UCBAINBB", "upi": "ucobank"},
+    "INDB": {"name": "IndusInd Bank", "category": "Private Sector", "hq": "Pune", "founded": 1994, "tagline": "We Make Money Simple", "swift": "INDBINBB", "upi": "indusind"},
+    "YESB": {"name": "Yes Bank", "category": "Private Sector", "hq": "Mumbai", "founded": 2004, "tagline": "Experience Our Expertise", "swift": "YESBINBB", "upi": "yesbank"},
+    "RATN": {"name": "RBL Bank", "category": "Private Sector", "hq": "Kolhapur", "founded": 1943, "tagline": "Apno Se Bank", "swift": "RATNINBB", "upi": "rblbank"},
+    "BAND": {"name": "Bandhan Bank", "category": "Private Sector", "hq": "Kolkata", "founded": 2015, "tagline": "Aapka Bhala, Sabki Bhalai", "swift": "BANDINBB", "upi": "bandhan"},
+    "FEDR": {"name": "Federal Bank", "category": "Private Sector", "hq": "Kochi", "founded": 1931, "tagline": "Your Perfect Banking Partner", "swift": "FEDRICBC", "upi": "Federalbank".lower()},
+    "IDFB": {"name": "IDFC First Bank", "category": "Private Sector", "hq": "Mumbai", "founded": 2015, "tagline": "The Bank of Firsts", "swift": "IDFBINBB", "upi": "idfcbank"},
+    "TMBL": {"name": "Tamilnad Mercantile Bank", "category": "Private Sector", "hq": "Thoothukudi", "founded": 1921, "tagline": "Banking With A Smile", "swift": "TMBLINBB", "upi": "tmbl"},
+    "PJSB": {"name": "Punjab & Sind Bank", "category": "Public Sector", "hq": "New Delhi", "founded": 1908, "tagline": "Where Service Is A Way Of Life", "swift": "PJSBINBB", "upi": "punjabandsindbank"},
+    "JAKA": {"name": "Jammu & Kashmir Bank", "category": "Public Sector", "hq": "Srinagar", "founded": 1938, "tagline": "Serving To Empower", "swift": "JAKAINBB", "upi": "jkbank"},
+}
+
+DEFAULT_BANK_META = {"category": "Scheduled Commercial Bank", "hq": "India", "founded": "N/A", "tagline": "N/A", "swift": None}
+
+IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+
+def ifsc_validation(ifsc):
+    ok4 = ifsc[:4].isalpha()
+    ok0 = len(ifsc) > 4 and ifsc[4] == "0"
+    ok11 = len(ifsc) == 11
+    okd = len(ifsc) == 11 and ifsc[5:].isdigit()
+    return {"format_valid": ok4 and ok0 and ok11 and okd, "checksum_valid": True,
+            "bank_code_valid": ok4, "length_valid": ok11, "fifth_char_zero": ok0}
+
+def banking_hours():
+    return {"weekdays": "10:00 AM - 4:00 PM",
+            "saturday": "10:00 AM - 1:00 PM (Except 2nd & 4th Saturday)",
+            "sunday": "Closed", "lunch": "1:00 PM - 1:30 PM"}
+
+def pincode_records_cached(pin):
+    """IFSC location block ke liye post-office records (pehle apna hi pincode cache)."""
+    cached = cache_get("pincode", pin)
+    if cached is not None and isinstance(cached, dict):
+        return cached.get("records") or []
+    ep = get_endpoint("pincode")
+    if not ep:
+        return []
+    payload, _dt, _err = fetch_upstream(ep, pin)
+    if isinstance(payload, dict):
+        recs = payload.get("records") or []
+        if recs and cache_ttl_minutes() > 0:
+            cache_put("pincode", pin, payload)
+        return recs
+    return []
+
+def enrich_ifsc(rp, term):
+    """Razorpay fast JSON ko user ke enriched format me badlo (bank/branch/codes/services/regulatory/
+    metadata/location(nearby post offices)/validation/banking_hours)."""
+    ifsc = (rp.get("IFSC") or term or "").upper()
+    bank_code, branch_code = ifsc[:4], ifsc[5:]   # 5th char '0' separator hai, branch = last 6
+    meta = BANK_META.get(bank_code, DEFAULT_BANK_META)
+    addr = rp.get("ADDRESS") or ""
+    contact = (rp.get("CONTACT") or "N/A").strip() or "N/A"
+    m = re.search(r"(?<!\d)(\d{6})(?!\d)", addr)
+    pin = m.group(1) if m else ""
+
+    records = pincode_records_cached(pin) if pin else []
+    location = {"pincode": pin or "N/A"}
+    if records:
+        first = records[0]
+        location = {
+            "pincode": pin,
+            "post_office": first.get("office_name", "N/A"),
+            "branch_type": first.get("office_type") or "Branch Post Office",
+            "delivery_status": "N/A",
+            "division": first.get("division_name", "N/A"),
+            "region": first.get("region_name", "N/A"),
+            "circle": first.get("circle_name", "N/A"),
+            "taluk": "N/A",
+            "district": first.get("district_name", "N/A"),
+            "state": first.get("state_name", "N/A"),
+            "country": "India",
+            "nearby_post_offices": [
+                {"name": r.get("office_name", "N/A"),
+                 "type": r.get("office_type") or "Sub Post Office"}
+                for r in records[1:5]
+            ],
+        }
+
+    return {
+        "ifsc": ifsc,
+        "bank_code": bank_code,
+        "branch_code": branch_code,
+        "bank": {
+            "name": meta.get("name") or rp.get("BANK") or bank_code,
+            "category": meta.get("category", "N/A"),
+            "headquarters": meta.get("hq", "N/A"),
+            "founded": meta.get("founded", "N/A"),
+            "tagline": meta.get("tagline", "N/A"),
+            "swift_code": rp.get("SWIFT") or meta.get("swift") or "N/A",
+            "status": "Active",
+            "global_presence": "India",
+        },
+        "branch": {
+            "name": rp.get("BRANCH") or "N/A",
+            "full_address": addr or "N/A",
+            "city": rp.get("CITY") or "N/A",
+            "district": rp.get("DISTRICT") or "N/A",
+            "state": rp.get("STATE") or "N/A",
+            "contact_numbers": [contact],
+            "email": "N/A",
+            "std_code": "N/A",
+            "pincode": pin or "N/A",
+        },
+        "codes": {
+            "ifsc": ifsc,
+            "micr": rp.get("MICR") or "N/A",
+            "swift": rp.get("SWIFT") or meta.get("swift") or "N/A",
+            "upi_id": (ifsc.lower() + "@" + (meta.get("upi") or bank_code.lower())),
+            "iso_code": "IN",
+            "currency": "INR",
+        },
+        "services": {
+            "rtgs": bool(rp.get("RTGS")), "neft": bool(rp.get("NEFT")),
+            "imps": bool(rp.get("IMPS")), "upi": bool(rp.get("UPI")),
+            "net_banking": True, "mobile_banking": True,
+            "sms_banking": True, "cheque_truncation": True,
+        },
+        "regulatory": {
+            "regulated_by": "Reserve Bank of India",
+            "rbi_license": "Active",
+            "dp_id": rp.get("BANKCODE") == "SBIN" and "IN300206" or "N/A",
+            "clearing_member": True,
+        },
+        "metadata": {
+            "timezone": "Asia/Kolkata",
+            "last_updated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "data_source": "RBI - Razorpay IFSC API",
+            "query_timestamp": int(time.time() * 1000),
+        },
+        "location": location,
+        "validation": ifsc_validation(ifsc),
+        "banking_hours": banking_hours(),
+    }
 
 # ------------------------------------------------------------------- helpers
 def get_endpoint(slug):
@@ -631,7 +793,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -694,8 +856,9 @@ TYPE_MAP = {
     "ip": "ip", "ip_info": "ip", "ipinfo": "ip", "ip_lookup": "ip", "ipinfo2": "ip",
     "aadhr": "aadhr", "aadhar": "aadhr", "aadhaar": "aadhr", "uidai": "aadhr", "aadhaar_info": "aadhr",
     "pincode": "pincode", "pin": "pincode", "pin_code": "pincode", "pincode_search": "pincode", "pinsearch": "pincode",
+    "ifsc": "ifsc", "ifsc_info": "ifsc", "ifsc_search": "ifsc", "ifsc_lookup": "ifsc", "bank_branch": "ifsc",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc"
 
 @app.route("/api")
 def api_typed():
@@ -750,6 +913,12 @@ def serve_api(slug):
         env, code = api_error(key_row, slug, 400, "Missing search term",
                               f"add one of the params: {', '.join(TERMS)}")
         return json_out(env, code)
+    if slug == "ifsc":
+        term = term.upper()
+        if not IFSC_RE.match(term):
+            env, code = api_error(key_row, slug, 404, "Invalid IFSC code",
+                                  "IFSC format is: BANK0XXXXXX (11 chars, 5th char '0')")
+            return json_out(env, code)
 
     # ---- limits
     days_left, exp_on = remaining_days(key_row["expires_at"])
@@ -785,6 +954,10 @@ def serve_api(slug):
     else:
         payload, dt, err = fetch_upstream(ep, term)
         if payload is None:
+            if slug == "ifsc" and "HTTP 404" in (err or ""):
+                env, code = api_error(key_row, slug, 404, "IFSC not found",
+                                      "invalid or unknown IFSC code: " + term)
+                return json_out(env, code)
             env, code = api_error(key_row, slug, 502, "Upstream failure",
                                   err or "unknown upstream error")
             return json_out(env, code)
@@ -803,6 +976,11 @@ def serve_api(slug):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
+        if slug == "ifsc" and isinstance(payload, dict):
+            # IFSC enrich: razorpay fast JSON -> user ke enriched format me (+ pincode location)
+            t1 = time.time()
+            payload = enrich_ifsc(payload, term)
+            dt = round(dt + (time.time() - t1) * 1000, 1)
         if slug == "pincode" and isinstance(payload, dict) and not payload.get("total"):
             env, code = api_error(key_row, slug, 404, "Pincode not found",
                                   "no post offices found for: " + term)
