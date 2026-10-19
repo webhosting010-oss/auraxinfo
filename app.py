@@ -643,6 +643,7 @@ def scrape_ig_profile(term):
 
 _IG_APP_ID = "936619743392459"  # instagram web app id (public, web_profile_info ke liye)
 _SX_DEAD_UNTIL = 0.0            # sahilxher key-expired hua to yaha tak skip
+_IG_COOL_UNTIL = 0.0            # IG rate-limit hua to itni der tak IG ko chhedna band
 
 def ig_web_profile(term):
     """Instagram web-profile-info API (no login) -> sabse rich public payload.
@@ -669,6 +670,10 @@ def ig_web_profile(term):
     except Exception as e:
         return None, round((time.time() - t0) * 1000, 1), "upstream error: " + str(e)[:80]
     dt = round((time.time() - t0) * 1000, 1)
+    if isinstance(d, dict) and not d.get("data"):
+        msg = (d.get("message") or "").lower()
+        if "login_required" in msg or "rate" in msg or "checkpoint" in msg:
+            return None, dt, "instagram rate-limited (" + (d.get("message") or "") + ")"
     u = (d or {}).get("data", {}).get("user") if isinstance(d, dict) else None
     if not isinstance(u, dict) or not u.get("username"):
         return None, dt, "profile not found"
@@ -714,23 +719,41 @@ def ig_web_profile(term):
         "leakdata": [{"name": "Instagram"}],
     }, dt, None
 
+def _is_ig_ratelimit(err, payload=None):
+    txt = (err or "") + (json.dumps(payload, ensure_ascii=False)[:200]
+                         if isinstance(payload, dict) else "")
+    t = txt.lower()
+    return ("429" in t or "rate-limited" in t or "rate limit" in t
+            or "login_required" in t)
+
 def fetch_insta_with_backup(ep, term):
     """Chain: instagram web API -> og-meta scraper -> sahilxher (last resort, key
-    expired hone pe 30 min ke liye skip)."""
-    global _SX_DEAD_UNTIL
+    expired hone pe 30 min ke liye skip). IG rate-limit pe 5 min cooldown,
+    taaki har call IG ko aur pareshan na kare."""
+    global _SX_DEAD_UNTIL, _IG_COOL_UNTIL
     t0 = time.time()
-    # 1) instagram direct web API
-    payload, dt, err = ig_web_profile(term)
-    if payload is not None:
-        payload["data_source"] = "Instagram web API (direct)"
-        return payload, dt, None
-    spent = round(time.time() - t0, 1)
-    # 2) og-meta scraper
-    fb, fdt, ferr = scrape_ig_profile(term)
-    if fb is not None:
-        fb["data_source"] = "Instagram og-meta (fallback)"
-        return fb, round(spent + fdt, 1), None
-    spent = round(time.time() - t0, 1)
+    if time.time() >= _IG_COOL_UNTIL:
+        # 1) instagram direct web API
+        payload, dt, err = ig_web_profile(term)
+        if payload is not None:
+            payload["data_source"] = "Instagram web API (direct)"
+            return payload, dt, None
+        if _is_ig_ratelimit(err):
+            _IG_COOL_UNTIL = time.time() + 300  # 5 min chup
+        spent = round(time.time() - t0, 1)
+        # 2) og-meta scraper (sirf jab cooldown na laga)
+        if time.time() < _IG_COOL_UNTIL:
+            return None, spent, (err or "instagram rate-limited")
+        fb, fdt, ferr = scrape_ig_profile(term)
+        if fb is not None:
+            fb["data_source"] = "Instagram og-meta (fallback)"
+            return fb, round(spent + fdt, 1), None
+        if _is_ig_ratelimit(ferr):
+            _IG_COOL_UNTIL = time.time() + 300
+        spent = round(time.time() - t0, 1)
+    else:
+        spent = 0.0
+        err = ferr = "instagram rate-limited (cooldown)"
     # 3) sahilxher sirf tab jab dead-mark na ho
     if time.time() >= _SX_DEAD_UNTIL:
         payload, dt3, err3 = fetch_upstream(ep, term)
@@ -744,7 +767,7 @@ def fetch_insta_with_backup(ep, term):
             if ("403" in txt or "expired" in txt.lower()
                     or "key status" in txt.lower()):
                 _SX_DEAD_UNTIL = time.time() + 1800  # 30 min ke liye skip
-            # asli user-truth ye thi: "profile not found" (IG ne 404 diya tha)
+            # asli user-truth ye thi: IG "not found" ya ratelimit — wahi batao
             return payload, round(spent + dt3, 1), (ferr or err3)
         payload["data_source"] = "sahilxher insta API"
         return payload, round(spent + dt3, 1), None
