@@ -148,6 +148,8 @@ def init_db():
              "", "", 3),
             ("osint",  "OSINT Search",      "🔎", "https://l34k-osint.onrender.com/search?key={upstream_key}&query={term}",
              "028d9205ebab1366bd43d8835e1f7cf9", "term", 4),
+            ("aadhr",  "Aadhaar Info",      "🆔", "https://sahilxher.madewith.me/api/aadhr?key={upstream_key}&q={term}",
+             "FELIX69", "aadhar", 6),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -179,6 +181,14 @@ def init_db():
     conn.execute(
         "UPDATE endpoints SET url_template=replace(url_template, 'proxy,hosting', 'proxy,hosting,query') "
         "WHERE slug='ip' AND url_template LIKE '%hosting' AND url_template NOT LIKE '%query'")
+    # migration: aadhr endpoint (Aadhaar -> SIM records) — purane DB me bhi add ho jaye
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='aadhr'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("aadhr", "Aadhaar Info", "🆔",
+             "https://sahilxher.madewith.me/api/aadhr?key={upstream_key}&q={term}",
+             "FELIX69", "aadhar", 6, now_iso()))
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -573,7 +583,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -629,8 +639,9 @@ TYPE_MAP = {
     "sim_info": "numpak", "paknum": "numpak",
     "osint": "osint", "osint_search": "osint", "multi": "osint",
     "ip": "ip", "ip_info": "ip", "ipinfo": "ip", "ip_lookup": "ip", "ipinfo2": "ip",
+    "aadhr": "aadhr", "aadhar": "aadhr", "aadhaar": "aadhr", "uidai": "aadhr", "aadhaar_info": "aadhr",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr"
 
 @app.route("/api")
 def api_typed():
@@ -734,7 +745,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug == "osint" and isinstance(payload, dict):
+        if slug in ("osint", "aadhr") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
