@@ -593,8 +593,8 @@ def scrape_ig_profile(term):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError:
-        return None, round((time.time() - t0) * 1000, 1), "upstream HTTP error"
+    except urllib.error.HTTPError as e:
+        return None, round((time.time() - t0) * 1000, 1), "upstream HTTP " + str(e.code)
     except Exception as e:
         return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
     dt = round((time.time() - t0) * 1000, 1)
@@ -723,7 +723,9 @@ def _is_ig_ratelimit(err, payload=None):
     txt = (err or "") + (json.dumps(payload, ensure_ascii=False)[:200]
                          if isinstance(payload, dict) else "")
     t = txt.lower()
-    return ("429" in t or "rate-limited" in t or "rate limit" in t
+    # IG ke ban codes (429 limit, 401 login-required, 411/403 block) sab = cooldownTrigger
+    return ("429" in t or "401" in t or "411" in t or "403" in t
+            or "rate-limited" in t or "rate limit" in t
             or "login_required" in t)
 
 def fetch_insta_with_backup(ep, term):
