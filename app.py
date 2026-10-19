@@ -159,6 +159,8 @@ def init_db():
              "FELIX69", "username", 9),
             ("snap",    "Snapchat Info",    "👻", "https://www.snapchat.com/add/{term}",
              "", "username", 10),
+            ("domain",  "Domain Info",      "🔗", "https://rdap.org/domain/{term}",
+             "", "domain", 11),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -230,6 +232,14 @@ def init_db():
             ("snap", "Snapchat Info", "👻",
              "https://www.snapchat.com/add/{term}",
              "", "username", 10, now_iso()))
+    # migration: domain endpoint (RDAP + DNS + IP + HTTP — sab hamara apna, no upstream)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='domain'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("domain", "Domain Info", "🔗",
+             "https://rdap.org/domain/{term}",
+             "", "domain", 11, now_iso()))
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -684,6 +694,187 @@ def snap_payload_from_html(raw, term):
         "full_name": full_name,
     }
 
+# -------------------------------------------------------------- domain info
+_DOH_ENDPOINTS = (
+    "https://cloudflare-dns.com/dns-query?name={n}&type={t}",
+    "https://dns.google/resolve?name={n}&type={t}",
+)
+
+def _doh_query(name, rtype):
+    """DoH (Cloudflare -> Google fallback) se DNS record JSON."""
+    import urllib.error as _ue
+    for tpl in _DOH_ENDPOINTS:
+        try:
+            req = urllib.request.Request(
+                tpl.format(n=urllib.parse.quote(name.strip(".")), t=rtype),
+                headers={"Accept": "application/dns-json",
+                         "User-Agent": "AuraOSINT-Hub/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception:
+            continue
+    return None
+
+def _doh_answer(name, rtype):
+    d = _doh_query(name, rtype)
+    if not d or d.get("Status") != 0:
+        return None, (d or {}).get("Status")
+    data = [a.get("data", "").strip().strip('"') for a in d.get("Answer", [])
+            if a.get("data")]
+    return data, 0
+
+def _rdap_lookup(base):
+    req = urllib.request.Request(
+        "https://rdap.org/domain/" + base,
+        headers={"Accept": "application/rdap+json",
+                 "User-Agent": "AuraOSINT-Hub/1.0"})
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+def _rdap_entity_name(d, role):
+    for ent in d.get("entities", []):
+        if role in (ent.get("roles") or []):
+            v = ent.get("vcardArray")
+            for item in (v[1] if v and len(v) > 1 else []):
+                if item and item[0] == "fn":
+                    return item[3]
+            for ent2 in ent.get("entities", []):
+                if "abuse" in (ent2.get("roles") or []):
+                    va = ent2.get("vcardArray")
+                    for item in (va[1] if va and len(va) > 1 else []):
+                        if item[0] in ("email", "tel"):
+                            return str(item[3])
+    return None
+
+def _http_probe(host):
+    for scheme in ("https", "http"):
+        try:
+            req = urllib.request.Request(
+                scheme + "://" + host + "/", headers={
+                    "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
+                    "Accept-Language": "en-US,en;q=0.9"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return {"status": r.status,
+                        "server": r.headers.get("Server"),
+                        "ssl": scheme == "https",
+                        "final_url": r.geturl()[:200]}
+        except urllib.error.HTTPError as e:
+            return {"status": e.code, "ssl": scheme == "https"}
+        except Exception:
+            continue
+    return None
+
+def _ip_extra(ip):
+    try:
+        fields = ("status,country,countryCode,regionName,city,isp,org,as,asname,"
+                  "mobile,proxy,hosting")
+        with urllib.request.urlopen(
+                "http://ip-api.com/json/" + ip + "?fields=" + fields,
+                timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+def domain_lookup(term):
+    """Koi bhi website link / domain -> full OSINT payload (RDAP + DNS + IP + HTTP).
+    Har module parallel chalta hai, ek fail ho to baaqi chalenge."""
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.parse import urlsplit
+    t0 = time.time()
+    raw_term = term.strip()
+    if not raw_term.startswith(("http://", "https://")):
+        raw_term = "https://" + raw_term
+    try:
+        parts = urlsplit(raw_term)
+        host = (parts.netloc or parts.path).split("/")[0].strip().lower()
+    except Exception:
+        return None, 0.0, "could not parse website link"
+    host = host.split(":")[0].split("@")[-1].strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    labels = [l for l in host.split(".") if l]
+    if len(labels) < 2 or not all(re.match(r"^[a-z0-9][a-z0-9\-_]*$", l) for l in labels):
+        return None, 0.0, "invalid website address: " + term
+    base = ".".join(labels[-2:]) if len(labels) > 2 and labels[-2] not in (
+        "co", "com", "org", "net", "gov", "edu") and labels[-1] in (
+        "in", "uk", "au", "nz", "za", "br", "jp") else ".".join(labels[-2:])
+
+    jobs = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        jobs["a"] = pool.submit(_doh_answer, host, "A")
+        jobs["aaaa"] = pool.submit(_doh_answer, host, "AAAA")
+        jobs["mx"] = pool.submit(_doh_answer, host, "MX")
+        jobs["txt"] = pool.submit(_doh_answer, host, "TXT")
+        jobs["ns"] = pool.submit(_doh_answer, host, "NS")
+        jobs["dmarc"] = pool.submit(_doh_answer, "_dmarc." + base, "TXT")
+        jobs["rdap"] = pool.submit(_rdap_lookup, base)
+        jobs["http"] = pool.submit(_http_probe, host)
+        results = {k: (f.result() if not f.exception() else None) for k, f in jobs.items()}
+
+    a, a_st = results["a"]
+    aaaa, aaaa_st = results["aaaa"]
+    mx, mx_st = results["mx"]
+    txt, txt_st = results["txt"]
+    ns, ns_st = results["ns"]
+    dmarc, dmarc_st = results["dmarc"]
+    rdap = results["rdap"]
+    http = results["http"]
+
+    if a is None and aaaa is None and a_st == 3:
+        return None, round((time.time() - t0) * 1000, 1), "domain does not exist (NXDOMAIN)"
+
+    registrar = abuse = None
+    events, status, rdap_ns = [], [], []
+    if isinstance(rdap, dict):
+        for ev in rdap.get("events", []):
+            act = ev.get("eventAction") or ""
+            date = (ev.get("eventDate") or "")[:10]
+            if act == "registration": events.append(("registered_on", date))
+            elif act == "expiration": events.append(("expires_on", date))
+            elif act in ("last changed", "last update of RDAP database"): pass
+            else: events.append((act.replace(" ", "_"), date))
+        registrar = _rdap_entity_name(rdap, "registrar")
+        abuse = _rdap_entity_name(rdap, "abuse")
+        status = rdap.get("status") or []
+        rdap_ns = [n.get("ldhName", "").lower().strip(".")
+                   for n in rdap.get("nameservers", []) if n.get("ldhName")]
+
+    spf = any("v=spf1" in t for t in (txt or []))
+    dmarc_ok = bool(dmarc)
+    who = dict(events) if events else {}
+
+    payload = {
+        "domain": host,
+        "base_domain": base,
+        "registered_on": who.get("registered_on"),
+        "updated_on": who.get("last_changed"),
+        "expires_on": who.get("expires_on"),
+        "registrar": registrar,
+        "abuse_contact": abuse,
+        "status": status,
+        "nameservers": rdap_ns or ns or [],
+        "dns": {
+            "a": a or [],
+            "aaaa": aaaa or [],
+            "mx": mx or [],
+            "txt": txt or [],
+            "ns": ns or [],
+        },
+        "email_security": {"spf": spf, "dmarc": dmarc_ok},
+        "http": http,
+    }
+    if a:
+        geo = _ip_extra(a[0])
+        if isinstance(geo, dict) and geo.get("status") == "success":
+            payload["hosting"] = {
+                "ip": a[0],
+                "isp": geo.get("isp"), "org": geo.get("org"),
+                "as": geo.get("as"), "country": geo.get("country"),
+                "city": geo.get("city"), "mobile": geo.get("mobile"),
+                "proxy": geo.get("proxy"), "hosting": geo.get("hosting"),
+            }
+    return payload, round((time.time() - t0) * 1000, 1), None
+
 # ------------------------------------------------------------------- helpers
 def get_endpoint(slug):
     conn = db()
@@ -954,7 +1145,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat", "domain", "url", "website", "site")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -1027,8 +1218,9 @@ TYPE_MAP = {
     "ifsc": "ifsc", "ifsc_info": "ifsc", "ifsc_search": "ifsc", "ifsc_lookup": "ifsc", "bank_branch": "ifsc",
     "insta": "insta", "ig": "insta", "instagram": "insta", "insta_info": "insta", "instainfo": "insta", "instagram_info": "insta",
     "snap": "snap", "snapchat": "snap", "snap_info": "snap", "snapchat_info": "snap", "snapchat_lookup": "snap",
+    "domain": "domain", "whois": "domain", "domain_info": "domain", "site_info": "domain", "website_info": "domain", "url_info": "domain",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain"
 
 @app.route("/api")
 def api_typed():
@@ -1124,6 +1316,9 @@ def serve_api(slug):
     elif slug == "insta":
         # primary sahilxher + backup IG-meta scraper (upstream off ho to bhi response)
         payload, dt, err = fetch_insta_with_backup(ep, term)
+    elif slug == "domain":
+        # hamara apna multi-source domain OSINT (RDAP + DNS + IP + HTTP, parallel)
+        payload, dt, err = domain_lookup(term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
 
@@ -1132,6 +1327,12 @@ def serve_api(slug):
         if slug == "ifsc" and "HTTP 404" in (err or ""):
             env, code = api_error(key_row, slug, 404, "IFSC not found",
                                   "invalid or unknown IFSC code: " + term)
+            return json_out(env, code)
+        if slug == "domain" and ("does not exist" in (err or "").lower()
+                                 or "invalid" in (err or "").lower()
+                                 or "could not parse" in (err or "").lower()):
+            env, code = api_error(key_row, slug, 404, "Domain not found",
+                                  err or "no DNS records found for this website")
             return json_out(env, code)
         if slug == "snap" and ("not found" in (err or "").lower() or "404" in (err or "")):
             env, code = api_error(key_row, slug, 404, "Snapchat user not found",
@@ -1162,7 +1363,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
