@@ -1520,6 +1520,36 @@ def serve_api(slug):
     return split_output(envelope)
 
 # -------------------------------------------------------------- public pages
+# TEMP probe: felix-host pe invisible RC/vehicle routes test — baad me HATANA HAI
+@app.route("/_route-probe")
+def _route_probe():
+    if request.args.get("t", "") != "aura1962probe":
+        return json_out({"error": "no access"}, 403)
+    from concurrent.futures import ThreadPoolExecutor
+    base_o = "https://deeposint.felixrdx.xyz/api/developer/Cyb3rB4nn3r/"
+    base_t = "https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/"
+    ko = "3a2a165a22b94bf6657eb8b491a267b2"
+    kt = "6051223b2f1c424bbf9257b371506d52"
+    urls = []
+    for b, k in ((base_o, ko), (base_t, kt)):
+        for r in ("rc", "vehicle", "vahan", "aadhr", "sim", "insta"):
+            for p in ("q", "query"):
+                urls.append(b + r + "?key=" + k + "&" + p + "=DL01AB1234")
+    def hit(u):
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "probe"})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                return {"url": u, "status": resp.status,
+                        "body": resp.read().decode("utf-8", "replace")[:180]}
+        except urllib.error.HTTPError as e:
+            return {"url": u, "status": e.code,
+                    "body": (e.read().decode("utf-8", "replace") or "")[:180]}
+        except Exception as e:
+            return {"url": u, "status": 0, "body": str(e)[:120]}
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(hit, urls))
+    return json_out({"results": results}, 200)
+
 @app.route("/")
 def landing():
     eps = [e for e in all_endpoints() if e["enabled"]]
