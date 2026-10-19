@@ -738,18 +738,14 @@ def fetch_insta_with_backup(ep, term):
         if payload is not None:
             payload["data_source"] = "Instagram web API (direct)"
             return payload, dt, None
-        if _is_ig_ratelimit(err):
-            _IG_COOL_UNTIL = time.time() + 300  # 5 min chup
         spent = round(time.time() - t0, 1)
-        # 2) og-meta scraper (sirf jab cooldown na laga)
-        if time.time() < _IG_COOL_UNTIL:
-            return None, spent, (err or "instagram rate-limited")
+        # 2) og-meta scraper (web API 429 ho tab bhi try — alag endpoint hota hai)
         fb, fdt, ferr = scrape_ig_profile(term)
         if fb is not None:
             fb["data_source"] = "Instagram og-meta (fallback)"
             return fb, round(spent + fdt, 1), None
-        if _is_ig_ratelimit(ferr):
-            _IG_COOL_UNTIL = time.time() + 300
+        if _is_ig_ratelimit(ferr) or _is_ig_ratelimit(err):
+            _IG_COOL_UNTIL = time.time() + 300  # 5 min chup
         spent = round(time.time() - t0, 1)
     else:
         spent = 0.0
