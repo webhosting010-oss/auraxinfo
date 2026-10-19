@@ -161,6 +161,8 @@ def init_db():
              "", "username", 10),
             ("domain",  "Domain Info",      "🔗", "https://rdap.org/domain/{term}",
              "", "domain", 11),
+            ("gag",     "GAG Stock (Grow a Garden)", "🌱", "https://growagarden.gg/api/stock",
+             "", "type", 12),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -240,6 +242,14 @@ def init_db():
             ("domain", "Domain Info", "🔗",
              "https://rdap.org/domain/{term}",
              "", "domain", 11, now_iso()))
+    # migration: gag endpoint (Grow a Garden stock — growagarden.gg, no upstream key)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='gag'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("gag", "GAG Stock (Grow a Garden)", "🌱",
+             "https://growagarden.gg/api/stock",
+             "", "type", 12, now_iso()))
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -875,6 +885,79 @@ def domain_lookup(term):
             }
     return payload, round((time.time() - t0) * 1000, 1), None
 
+# ------------------------------------------------------------- gag (grow a garden)
+_GAG_HEADERS = {
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "referer": "https://growagarden.gg/stocks",
+    "trpc-accept": "application/json",
+    "x-trpc-source": "gag",
+    "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0 Safari/537.36"),
+}
+
+def _gag_items(lst):
+    return [{"name": (i or {}).get("name"), "qty": (i or {}).get("value")}
+            for i in (lst or []) if isinstance(i, dict)]
+
+def gag_payload():
+    """Grow a Garden live stock + weather (growagarden.gg — no key, hamara apna wrapper)."""
+    from concurrent.futures import ThreadPoolExecutor
+    t0 = time.time()
+
+    def get_stock():
+        req = urllib.request.Request("https://growagarden.gg/api/stock",
+                                     headers=_GAG_HEADERS)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+
+    def get_weather():
+        h = dict(_GAG_HEADERS)
+        h["referer"] = "https://growagarden.gg/weather"
+        req = urllib.request.Request("https://growagarden.gg/api/weather/stats",
+                                     headers=h)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+
+    stock = weather = None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_stock, f_weather = pool.submit(get_stock), pool.submit(get_weather)
+        stock = f_stock.result() if not f_stock.exception() else None
+        weather = f_weather.result() if not f_weather.exception() else None
+
+    if not isinstance(stock, dict) or not stock.get("seedsStock") and not stock.get("gearStock"):
+        return None, round((time.time() - t0) * 1000, 1), "GAG stock source unavailable"
+
+    payload = {
+        "game": "Grow a Garden",
+        "data_status": stock.get("dataStatus"),
+        "last_api_fetch": stock.get("lastApiFetch"),
+        "seeds_stock": _gag_items(stock.get("seedsStock")),
+        "gear_stock": _gag_items(stock.get("gearStock")),
+        "egg_stock": _gag_items(stock.get("eggStock")),
+        "night_stock": _gag_items(stock.get("nightStock")),
+        "event_stock": _gag_items(stock.get("eventStock")),
+        "honey_stock": _gag_items(stock.get("honeyStock")),
+        "cosmetics_stock": _gag_items(stock.get("cosmeticsStock")),
+        "merchants_stock": _gag_items(stock.get("merchantsStock")),
+        "restock_timers_seconds": stock.get("restockTimers"),
+    }
+    evs = []
+    if isinstance(weather, dict):
+        for e in weather.get("events", []):
+            if not isinstance(e, dict):
+                continue
+            evs.append({
+                "name": e.get("displayName") or e.get("name"),
+                "emoji": e.get("emoji"),
+                "active": bool(e.get("isActive")),
+                "last_seen": ((e.get("lastSeen") or "")[:19].replace("T", " ")
+                              + " UTC") if e.get("lastSeen") else None,
+            })
+    payload["weather_events"] = evs
+    payload["active_weather"] = [e["name"] for e in evs if e["active"]]
+    return payload, round((time.time() - t0) * 1000, 1), None
+
 # ------------------------------------------------------------------- helpers
 def get_endpoint(slug):
     conn = db()
@@ -1145,7 +1228,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat", "domain", "url", "website", "site")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat", "domain", "url", "website", "site", "gag")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -1219,8 +1302,9 @@ TYPE_MAP = {
     "insta": "insta", "ig": "insta", "instagram": "insta", "insta_info": "insta", "instainfo": "insta", "instagram_info": "insta",
     "snap": "snap", "snapchat": "snap", "snap_info": "snap", "snapchat_info": "snap", "snapchat_lookup": "snap",
     "domain": "domain", "whois": "domain", "domain_info": "domain", "site_info": "domain", "website_info": "domain", "url_info": "domain",
+    "gag": "gag", "grow_a_garden": "gag", "growagarden": "gag", "gag_stock": "gag", "gag_info": "gag", "gagstock": "gag",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, gag"
 
 @app.route("/api")
 def api_typed():
@@ -1257,6 +1341,8 @@ def serve_api(slug):
         return json_out(env, code)
 
     term = first_term()
+    if slug == "gag" and not term:
+        term = "stock"  # gag ko search term ki zarurat nahi (live global stock)
     key_row = get_key_raw(kv)
 
     if not kv or not key_row:
@@ -1301,6 +1387,8 @@ def serve_api(slug):
 
     # ---- upstream (L1 memo -> L2 db cache -> live fetch)
     ttl = cache_ttl_minutes()
+    if slug == "gag":
+        ttl = min(ttl, 5)  # stock har 5 min refresh hota hai — 12h cache yahan galat
     ck = slug + "|" + term
     cached_payload = memcache_get(ck) if ttl > 0 else None
     if cached_payload is not None:
@@ -1319,6 +1407,9 @@ def serve_api(slug):
     elif slug == "domain":
         # hamara apna multi-source domain OSINT (RDAP + DNS + IP + HTTP, parallel)
         payload, dt, err = domain_lookup(term)
+    elif slug == "gag":
+        # Grow a Garden live stock + weather (growagarden.gg, no key)
+        payload, dt, err = gag_payload()
     else:
         payload, dt, err = fetch_upstream(ep, term)
 
@@ -1363,7 +1454,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "gag") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
