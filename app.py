@@ -641,23 +641,114 @@ def scrape_ig_profile(term):
         "leakdata": [{"name": "Instagram"}],
     }), dt, None
 
+_IG_APP_ID = "936619743392459"  # instagram web app id (public, web_profile_info ke liye)
+_SX_DEAD_UNTIL = 0.0            # sahilxher key-expired hua to yaha tak skip
+
+def ig_web_profile(term):
+    """Instagram web-profile-info API (no login) -> sabse rich public payload.
+    Exact counts, HD pic, bio links, verified/private, recent posts."""
+    from urllib.error import HTTPError
+    user = term.strip().lstrip("@")
+    url = ("https://www.instagram.com/api/v1/users/web_profile_info/?username="
+           + urllib.parse.quote(user, ""))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _IG_UA,
+        "x-ig-app-id": _IG_APP_ID,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/" + urllib.parse.quote(user, "") + "/",
+    })
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            d = json.loads(resp.read().decode("utf-8", "replace"))
+    except HTTPError as e:
+        if e.code == 404:
+            return None, round((time.time() - t0) * 1000, 1), "profile not found"
+        return None, round((time.time() - t0) * 1000, 1), "upstream HTTP " + str(e.code)
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000, 1), "upstream error: " + str(e)[:80]
+    dt = round((time.time() - t0) * 1000, 1)
+    u = (d or {}).get("data", {}).get("user") if isinstance(d, dict) else None
+    if not isinstance(u, dict) or not u.get("username"):
+        return None, dt, "profile not found"
+    med = (u.get("edge_owner_to_timeline_media") or {})
+    posts = []
+    for edge in (med.get("edges") or [])[:6]:
+        n = edge.get("node", {}) if isinstance(edge, dict) else {}
+        cap = ""
+        ce = (n.get("edge_media_to_caption") or {}).get("edges") or []
+        if ce and isinstance(ce[0], dict):
+            cap = (ce[0].get("node", {}) or {}).get("text", "")[:120]
+        posts.append({"shortcode": n.get("shortcode"),
+                      "image": n.get("display_url"),
+                      "caption": cap,
+                      "likes": ((n.get("edge_liked_by") or {}).get("count")
+                                or (n.get("edge_media_preview_like") or {}).get("count")),
+                      "comments": ((n.get("edge_media_to_comment") or {}).get("count"))})
+    bio_links = []
+    for bl in (u.get("bio_links") or []):
+        if isinstance(bl, dict) and bl.get("url"):
+            bio_links.append(bl["url"].strip())
+    return {
+        "pk": str(u.get("id", "")),
+        "user_id": str(u.get("id", "")),
+        "username": u.get("username", user),
+        "full_name": (u.get("full_name") or "").strip() or user,
+        "biography": u.get("biography") or "",
+        "external_url": u.get("external_url"),
+        "category": (u.get("category_name") or u.get("business_category_name")),
+        "follower_count": (u.get("edge_followed_by") or {}).get("count", 0),
+        "following_count": (u.get("edge_follow") or {}).get("count", 0),
+        "media_count": med.get("count", 0),
+        "followers": (u.get("edge_followed_by") or {}).get("count", 0),
+        "following": (u.get("edge_follow") or {}).get("count", 0),
+        "posts_count": med.get("count", 0),
+        "is_private": bool(u.get("is_private")),
+        "is_verified": bool(u.get("is_verified")),
+        "profile_pic_url": u.get("profile_pic_url", ""),
+        "hd_profile_pic_url": u.get("profile_pic_url_hd") or u.get("profile_pic_url", ""),
+        "bio_links": bio_links,
+        "posts": posts,
+        "fetched_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "leakdata": [{"name": "Instagram"}],
+    }, dt, None
+
 def fetch_insta_with_backup(ep, term):
-    """Primary sahilxher; fail/slow/not-found pe hamara IG profile-meta fallback."""
-    payload, dt, err = fetch_upstream(ep, term)
-    # {} (khaali JSON) ya explicit success/status false — dono ko fail maano
-    ok = payload is not None and not (isinstance(payload, dict) and not payload)
-    if ok and isinstance(payload, dict) and (
-            payload.get("success") is False or payload.get("status") is False):
-        ok = False
-    if not ok:
-        fb, fdt, ferr = scrape_ig_profile(term)
-        if fb is not None:
-            fb["data_source"] = "Instagram direct (fallback scraper)"
-            return fb, round(dt + fdt, 1), None
-        return payload, dt, err
-    if isinstance(payload, dict):
+    """Chain: instagram web API -> og-meta scraper -> sahilxher (last resort, key
+    expired hone pe 30 min ke liye skip)."""
+    global _SX_DEAD_UNTIL
+    t0 = time.time()
+    # 1) instagram direct web API
+    payload, dt, err = ig_web_profile(term)
+    if payload is not None:
+        payload["data_source"] = "Instagram web API (direct)"
+        return payload, dt, None
+    spent = round(time.time() - t0, 1)
+    # 2) og-meta scraper
+    fb, fdt, ferr = scrape_ig_profile(term)
+    if fb is not None:
+        fb["data_source"] = "Instagram og-meta (fallback)"
+        return fb, round(spent + fdt, 1), None
+    spent = round(time.time() - t0, 1)
+    # 3) sahilxher sirf tab jab dead-mark na ho
+    if time.time() >= _SX_DEAD_UNTIL:
+        payload, dt3, err3 = fetch_upstream(ep, term)
+        ok = payload is not None and not (isinstance(payload, dict) and not payload)
+        if ok and isinstance(payload, dict) and (
+                payload.get("success") is False or payload.get("status") is False):
+            ok = False
+        if not ok:
+            txt = (err3 or "") + (json.dumps(payload, ensure_ascii=False)[:150]
+                                  if isinstance(payload, dict) else "")
+            if ("403" in txt or "expired" in txt.lower()
+                    or "key status" in txt.lower()):
+                _SX_DEAD_UNTIL = time.time() + 1800  # 30 min ke liye skip
+            # asli user-truth ye thi: "profile not found" (IG ne 404 diya tha)
+            return payload, round(spent + dt3, 1), (ferr or err3)
         payload["data_source"] = "sahilxher insta API"
-    return payload, dt, err
+        return payload, round(spent + dt3, 1), None
+    return None, spent, (ferr or err or "profile not found")
 
 # ------------------------------------------------------------ snapchat info
 def snap_payload_from_html(raw, term):
@@ -1336,6 +1427,10 @@ def serve_api(slug):
                                  or "could not parse" in (err or "").lower()):
             env, code = api_error(key_row, slug, 404, "Domain not found",
                                   err or "no DNS records found for this website")
+            return json_out(env, code)
+        if slug == "insta" and "not found" in (err or "").lower():
+            env, code = api_error(key_row, slug, 404, "Instagram user not found",
+                                  "no Instagram profile found for: " + term)
             return json_out(env, code)
         if slug == "snap" and ("not found" in (err or "").lower() or "404" in (err or "")):
             env, code = api_error(key_row, slug, 404, "Snapchat user not found",
