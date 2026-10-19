@@ -240,14 +240,9 @@ def init_db():
             ("domain", "Domain Info", "🔗",
              "https://rdap.org/domain/{term}",
              "", "domain", 11, now_iso()))
-    # migration: vehicle endpoint (carinfo.app khuli RTO route — no upstream key chahiye)
-    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='vehicle'").fetchone():
-        conn.execute(
-            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
-            " VALUES(?,?,?,?,?,?,?,?)",
-            ("vehicle", "Vehicle RC Info", "🚗",
-             "https://www.carinfo.app/_next/data/{build}/rto-vehicle-registration-detail/{term}.json?rto={term}",
-             "", "term", 12, now_iso()))
+    # cleanup: vehicle endpoint hata diya (user ki demand) — DB se bhi saaf
+    conn.execute("DELETE FROM endpoints WHERE slug='vehicle'")
+    conn.execute("DELETE FROM cache WHERE slug='vehicle'")
     # cleanup: gag endpoint hata diya (user ki demand) — DB se bhi saaf
     conn.execute("DELETE FROM endpoints WHERE slug='gag'")
     conn.execute("DELETE FROM cache WHERE slug='gag'")
@@ -1282,95 +1277,6 @@ def resolve_term_param(ep, term):
         return "userid" if term.isdigit() else "username"
     return ep["term_param"] or "term"
 
-# -------------------------------------------------------- vehicle RC (carinfo)
-# carinfo.app ka khula Next.js data-route — login ke bina RTO/owner/model deta hai
-_CI_BUILD_ID_MEM = {"v": "7YKSkx-T2aS6sBI5iO4OL", "ts": 0.0}
-_CI_BUILD_TTL = 3600
-
-def _carinfo_headers():
-    return {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9"}
-
-def _carinfo_build_id(now):
-    """carinfo.app Next.js buildId (site deploy pe badalta hai) — 1 ghanta cache."""
-    if now - _CI_BUILD_ID_MEM["ts"] < _CI_BUILD_TTL:
-        return _CI_BUILD_ID_MEM["v"]
-    try:
-        req = urllib.request.Request("https://www.carinfo.app/rto-vehicle-registration-detail",
-                                     headers=_carinfo_headers())
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            raw = resp.read(200000).decode("utf-8", "replace")
-        m = re.search(r"/_next/static/([A-Za-z0-9_\-]+)/_buildManifest", raw)
-        if m:
-            _CI_BUILD_ID_MEM.update({"v": m.group(1), "ts": now})
-            return _CI_BUILD_ID_MEM["v"]
-    except Exception:
-        pass
-    _CI_BUILD_ID_MEM["ts"] = now  # fallback value bhi ek ghanta chal do
-    return _CI_BUILD_ID_MEM["v"]
-
-PLATE_RE = re.compile(r"^[A-Z]{2}[0-9]{1,2}[A-Z]{0,3}[0-9]{1,4}$")
-
-def normalize_plate(term):
-    return re.sub(r"[\s\-\.]", "", (term or "").upper())
-
-def vehicle_lookup(term):
-    """carinfo.app rto-details data route (public level) -> clean vehicle payload."""
-    t0 = time.time()
-    plate = normalize_plate(term)
-    if not plate or not PLATE_RE.match(plate):
-        return None, round((time.time() - t0) * 1000, 1), "invalid vehicle number format"
-    build = _carinfo_build_id(time.time())
-    url = ("https://www.carinfo.app/_next/data/" + build +
-           "/rto-vehicle-registration-detail/rto-details/" + plate +
-           ".json?rto=" + urllib.parse.quote(plate))
-    try:
-        req = urllib.request.Request(url, headers=_carinfo_headers())
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        return None, round((time.time() - t0) * 1000, 1), f"upstream HTTP {e.code}"
-    except Exception as e:
-        return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
-    dt = round((time.time() - t0) * 1000, 1)
-    props = (data or {}).get("pageProps") or {}
-    rr = props.get("rtoDetailsReponse") or {}
-    owner, model, rto = "", "", {}
-    for sec in (rr.get("webSections") or []):
-        msg = sec.get("message") or {}
-        if msg.get("title") and not owner:
-            owner = msg.get("title") or ""
-            model = msg.get("subtitle") or ""
-        if (sec.get("text") or {}).get("title") == "RTO Details":
-            for m_ in (sec.get("messages") or []):
-                mt, ms = (m_.get("title") or ""), (m_.get("subtitle") or "")
-                if not ms:
-                    continue
-                if mt == "Number":
-                    rto["number"] = ms
-                elif mt == "Registered RTO":
-                    rto["office"] = ms
-                elif mt == "State":
-                    rto["state"] = ms
-                elif mt == "RTO Phone number":
-                    rto["phone"] = ms
-                elif mt == "Website":
-                    rto["website"] = ms
-    if not owner and not model and not rto:
-        return None, dt, "vehicle not found"
-    payload = {
-        "vehicle_number": plate,
-        "owner": owner,
-        "vehicle_model": model,
-        "rto": rto,
-        "owner_private_masked": bool(owner and "*" in owner),
-        "full_details_note": "owner name public records pe masked hota hai (login-level fields wrapped nahi)",
-        "source": "carinfo.app public RTO data",
-    }
-    return payload, dt, None
-
 def fetch_upstream(ep, term):
     """Call upstream URL template, return (parsed_json_or_None, elapsed_ms, error_text)."""
     url = (ep["url_template"]
@@ -1431,10 +1337,8 @@ TYPE_MAP = {
     "insta": "insta", "ig": "insta", "instagram": "insta", "insta_info": "insta", "instainfo": "insta", "instagram_info": "insta",
     "snap": "snap", "snapchat": "snap", "snap_info": "snap", "snapchat_info": "snap", "snapchat_lookup": "snap",
     "domain": "domain", "whois": "domain", "domain_info": "domain", "site_info": "domain", "website_info": "domain", "url_info": "domain",
-    "vehicle": "vehicle", "rc": "vehicle", "rc_info": "vehicle", "plate": "vehicle",
-    "rto": "vehicle", "vahan": "vehicle", "vehicle_info": "vehicle", "rc_lookup": "vehicle",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, vehicle"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain"
 
 @app.route("/api")
 def api_typed():
@@ -1533,9 +1437,6 @@ def serve_api(slug):
     elif slug == "domain":
         # hamara apna multi-source domain OSINT (RDAP + DNS + IP + HTTP, parallel)
         payload, dt, err = domain_lookup(term)
-    elif slug == "vehicle":
-        # carinfo.app khuli RTO data route (no login, no key)
-        payload, dt, err = vehicle_lookup(term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
 
@@ -1558,14 +1459,6 @@ def serve_api(slug):
         if slug == "snap" and ("not found" in (err or "").lower() or "404" in (err or "")):
             env, code = api_error(key_row, slug, 404, "Snapchat user not found",
                                   "no Snapchat profile found for: " + term)
-            return json_out(env, code)
-        if slug == "vehicle" and "invalid" in (err or "").lower():
-            env, code = api_error(key_row, slug, 400, "Invalid vehicle number",
-                                  "use Indian RC number format, e.g. RJ14CV0002")
-            return json_out(env, code)
-        if slug == "vehicle" and "not found" in (err or "").lower():
-            env, code = api_error(key_row, slug, 404, "Vehicle not found",
-                                  "no RTO record found for: " + term)
             return json_out(env, code)
         env, code = api_error(key_row, slug, 502, "Upstream failure",
                               err or "unknown upstream error")
@@ -1592,7 +1485,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "vehicle") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
