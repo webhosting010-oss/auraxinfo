@@ -621,14 +621,19 @@ def scrape_ig_profile(term):
 def fetch_insta_with_backup(ep, term):
     """Primary sahilxher; fail/slow/not-found pe hamara IG profile-meta fallback."""
     payload, dt, err = fetch_upstream(ep, term)
-    ok = payload is not None
+    # {} (khaali JSON) ya explicit success/status false — dono ko fail maano
+    ok = payload is not None and not (isinstance(payload, dict) and not payload)
     if ok and isinstance(payload, dict) and (
             payload.get("success") is False or payload.get("status") is False):
         ok = False
     if not ok:
         fb, fdt, ferr = scrape_ig_profile(term)
         if fb is not None:
+            fb["data_source"] = "Instagram direct (fallback scraper)"
             return fb, round(dt + fdt, 1), None
+        return payload, dt, err
+    if isinstance(payload, dict):
+        payload["data_source"] = "sahilxher insta API"
     return payload, dt, err
 
 # ------------------------------------------------------------------- helpers
@@ -1066,14 +1071,17 @@ def serve_api(slug):
         payload, dt, err = fetch_insta_with_backup(ep, term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
-        if payload is None:
-            if slug == "ifsc" and "HTTP 404" in (err or ""):
-                env, code = api_error(key_row, slug, 404, "IFSC not found",
-                                      "invalid or unknown IFSC code: " + term)
-                return json_out(env, code)
-            env, code = api_error(key_row, slug, 502, "Upstream failure",
-                                  err or "unknown upstream error")
+
+    # error handling SAB slugs ke liye (insta bhi)
+    if not is_cached and payload is None:
+        if slug == "ifsc" and "HTTP 404" in (err or ""):
+            env, code = api_error(key_row, slug, 404, "IFSC not found",
+                                  "invalid or unknown IFSC code: " + term)
             return json_out(env, code)
+        env, code = api_error(key_row, slug, 502, "Upstream failure",
+                              err or "unknown upstream error")
+        return json_out(env, code)
+    if not is_cached and payload is not None:
         uerr = upstream_error_text(payload)
         if uerr:
             env, code = api_error(key_row, slug, 502, "Upstream error", uerr)
@@ -1086,6 +1094,11 @@ def serve_api(slug):
 
     # ---- success path
     if not is_cached:
+        if isinstance(payload, dict) and not payload:
+            # upstream ne literal {} bheja (khaali) — clean error do, khaali 200 nahi
+            env, code = api_error(key_row, slug, 502, "Upstream returned empty response",
+                                  "no data in upstream response")
+            return json_out(env, code)
         if slug == "tg":
             payload = normalize_tg(payload, term)
         if slug == "numpak":
