@@ -5,6 +5,7 @@
 import os
 import sys
 import json
+import re
 import time
 import sqlite3
 import secrets
@@ -150,6 +151,8 @@ def init_db():
              "028d9205ebab1366bd43d8835e1f7cf9", "term", 4),
             ("aadhr",  "Aadhaar Info",      "🆔", "https://sahilxher.madewith.me/api/aadhr?key={upstream_key}&q={term}",
              "FELIX69", "aadhar", 6),
+            ("pincode", "Pincode Search",   "📮", "https://myspeedpost.com/pincode-search?q={term}",
+             "", "pincode", 7),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -189,6 +192,14 @@ def init_db():
             ("aadhr", "Aadhaar Info", "🆔",
              "https://sahilxher.madewith.me/api/aadhr?key={upstream_key}&q={term}",
              "FELIX69", "aadhar", 6, now_iso()))
+    # migration: pincode endpoint (myspeedpost Livewire page scraper) — purane DB me bhi add ho jaye
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='pincode'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("pincode", "Pincode Search", "📮",
+             "https://myspeedpost.com/pincode-search?q={term}",
+             "", "pincode", 7, now_iso()))
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -312,6 +323,43 @@ def upstream_error_text(payload):
             txt += " (upstream key invalid/expired — Admin > Endpoints me naya key dalo)"
         return txt or "upstream rejected the request"
     return None
+
+# ------------------------------------------------------------------- pincode
+# myspeedpost.com pincode-search Ek Livewire page hai — office records HTML ke
+# andar `return this.chunk([{key,label,value},...], cardCount);` chunks ki tarah embedded
+PINCODE_CHUNK_RE = re.compile(r"return this\.chunk\((\[.*?\])\s*,\s*cardCount\)", re.S)
+
+def parse_pincode_html(raw):
+    """Livewire chunks ko unescape karke records list banata hai (dedup ke saath)."""
+    records, seen = [], set()
+    for chunk in PINCODE_CHUNK_RE.findall(raw or ""):
+        txt = (chunk.replace("&quot;", '"').replace("&#039;", "'")
+                    .replace("&amp;", "&"))
+        try:
+            arr = json.loads(txt)
+        except Exception:
+            continue
+        if not isinstance(arr, list):
+            continue
+        rec = {p.get("key"): p.get("value") for p in arr
+               if isinstance(p, dict) and p.get("key")}
+        if not rec:
+            continue
+        sig = json.dumps(rec, sort_keys=True)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        records.append(rec)
+    return records
+
+def pincode_payload(term, records):
+    """Hamare style ka clean payload: {pincode, total, records} label-based keys hata ke."""
+    clean = []
+    for r in records:
+        # label fields unka kaam hai; sirf value fields rakho
+        rec = {k: v for k, v in r.items() if k not in ("label",)}
+        clean.append(rec)
+    return {"pincode": term, "total": len(clean), "records": clean}
 
 # ------------------------------------------------------------------- helpers
 def get_endpoint(slug):
@@ -583,7 +631,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -610,6 +658,11 @@ def fetch_upstream(ep, term):
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read().decode("utf-8", "replace")
         dt = round((time.time() - t0) * 1000, 1)
+        if ep["slug"] == "pincode":
+            # pincode page HTML deta hai (Livewire) — chunks parse karke records nikaalo
+            recs = parse_pincode_html(raw)
+            return (pincode_payload(term, recs), dt, None) if recs else \
+                   ({"pincode": term, "total": 0, "records": []}, dt, None)
         try:
             return json.loads(raw), dt, None
         except Exception:
@@ -640,8 +693,9 @@ TYPE_MAP = {
     "osint": "osint", "osint_search": "osint", "multi": "osint",
     "ip": "ip", "ip_info": "ip", "ipinfo": "ip", "ip_lookup": "ip", "ipinfo2": "ip",
     "aadhr": "aadhr", "aadhar": "aadhr", "aadhaar": "aadhr", "uidai": "aadhr", "aadhaar_info": "aadhr",
+    "pincode": "pincode", "pin": "pincode", "pin_code": "pincode", "pincode_search": "pincode", "pinsearch": "pincode",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode"
 
 @app.route("/api")
 def api_typed():
@@ -745,10 +799,14 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
+        if slug == "pincode" and isinstance(payload, dict) and not payload.get("total"):
+            env, code = api_error(key_row, slug, 404, "Pincode not found",
+                                  "no post offices found for: " + term)
+            return json_out(env, code)
         if slug == "ip" and isinstance(payload, dict) and payload.get("status") == "fail":
             env, code = api_error(key_row, slug, 404, "IP not found",
                                   (payload.get("message") or "upstream could not resolve this IP"))
