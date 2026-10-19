@@ -1520,56 +1520,41 @@ def serve_api(slug):
     return split_output(envelope)
 
 # -------------------------------------------------------------- public pages
-# TEMP probe: carinfo.app internals test — HATANA HAI
+# TEMP probe: carinfo _next/data route test — HATANA HAI
 @app.route("/_route-probe")
 def _route_probe():
     if request.args.get("t", "") != "aura1962probe":
         return json_out({"error": "no access"}, 403)
     from concurrent.futures import ThreadPoolExecutor
-    plate = "RJ14CV0002"
-    chrome_hdrs = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.carinfo.app/rto-vehicle-registration-detail",
-        "Origin": "https://www.carinfo.app",
-        "x-csrf-token": "undefined",
-    }
+    build = "7YKSkx-T2aS6sBI5iO4OL"
+    plate = request.args.get("p", "RJ14CV0002")
+    chrome_hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                   "Accept": "application/json"}
     urls = []
-
-    def add(label, method, url, data=None, extra=None):
-        h = dict(chrome_hdrs)
-        if extra:
-            h.update(extra)
-        urls.append({"label": label, "method": method, "url": url, "data": data, "headers": h})
-
-    add("get-v3-fullhdr", "GET", "https://www.carinfo.app/api/v3/plate/info?plateNo=" + plate)
-    add("get-v3-noref", "GET", "https://www.carinfo.app/api/v3/plate/info?plateNo=" + plate,
-        extra={"Referer": None})
-    add("post-v3-json", "POST", "https://www.carinfo.app/api/v3/plate/info",
-        data=json.dumps({"plateNo": plate}).encode(),
-        extra={"Content-Type": "application/json"})
-    add("get-apiv3", "GET", "https://api.carinfo.app/api/v3/plate/info?plateNo=" + plate)
-    add("get-rootpage", "GET", "https://www.carinfo.app/rto-vehicle-registration-detail")
+    base = "https://www.carinfo.app/_next/data/" + build + "/rto-vehicle-registration-detail/"
+    urls.append({"label": "rto-data-route", "method": "GET",
+                 "url": base + "rto-details/" + plate + ".json?rto=" + plate, "headers": chrome_hdrs})
+    urls.append({"label": "rc-data-route", "method": "GET",
+                 "url": base + "rc-details/" + plate + ".json", "headers": chrome_hdrs})
+    urls.append({"label": "rto-doc-html", "method": "GET",
+                 "url": "https://www.carinfo.app/rto-vehicle-registration-detail/rto-details/" + plate,
+                 "headers": {"User-Agent": chrome_hdrs["User-Agent"]}})
 
     def hit(job):
-        h = dict(job["headers"])
-        h = {k: v for k, v in h.items() if v is not None}
         try:
-            req = urllib.request.Request(job["url"], data=job.get("data"), headers=h,
-                                         method=job["method"])
-            with urllib.request.urlopen(req, timeout=18) as resp:
+            req = urllib.request.Request(job["url"], headers=job["headers"], method=job["method"])
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 return {"label": job["label"], "status": resp.status,
-                        "ct": resp.headers.get("Content-Type", ""),
-                        "body": resp.read().decode("utf-8", "replace")[:400]}
+                        "ct": resp.headers.get("Content-Type", "")[:40],
+                        "body": resp.read().decode("utf-8", "replace")[:500]}
         except urllib.error.HTTPError as e:
             return {"label": job["label"], "status": e.code,
-                    "ct": e.headers.get("Content-Type", ""),
-                    "body": (e.read().decode("utf-8", "replace") or "")[:400]}
+                    "ct": e.headers.get("Content-Type", "")[:40],
+                    "body": (e.read().decode("utf-8", "replace") or "")[:500]}
         except Exception as e:
-            return {"label": job["label"], "status": 0, "ct": "", "body": str(e)[:200]}
+            return {"label": job["label"], "status": 0, "ct": "", "body": str(e)[:150]}
 
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(pool.map(hit, urls))
     return json_out({"results": results}, 200)
 
