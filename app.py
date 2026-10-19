@@ -155,6 +155,8 @@ def init_db():
              "", "pincode", 7),
             ("ifsc",    "IFSC Info",        "🏦", "https://ifsc.razorpay.com/{term}",
              "", "ifsc", 8),
+            ("insta",   "Instagram Info",   "📸", "https://sahilxher.madewith.me/api/insta?key={upstream_key}&q={term}",
+             "FELIX69", "username", 9),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -210,6 +212,14 @@ def init_db():
             ("ifsc", "IFSC Info", "🏦",
              "https://ifsc.razorpay.com/{term}",
              "", "ifsc", 8, now_iso()))
+    # migration: insta endpoint (sahilxher instagram info)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='insta'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("insta", "Instagram Info", "📸",
+             "https://sahilxher.madewith.me/api/insta?key={upstream_key}&q={term}",
+             "FELIX69", "username", 9, now_iso()))
     # seed demo key
     if conn.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"] == 0:
         conn.execute(
@@ -331,6 +341,11 @@ def upstream_error_text(payload):
         code = (err.get("code") or err.get("CODE") or "").upper()
         if "KEY" in code or "KEY" in txt.upper():
             txt += " (upstream key invalid/expired — Admin > Endpoints me naya key dalo)"
+        return txt or "upstream rejected the request"
+    if payload.get("status") is False and isinstance(err, str):
+        # insta jaise wrapper: {status:false, error:"API Not Responding", message:"..."}
+        msg = (payload.get("message") or "").strip()
+        txt = (err.strip() + (" — " + msg if msg else "")).strip()
         return txt or "upstream rejected the request"
     return None
 
@@ -793,7 +808,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -857,8 +872,9 @@ TYPE_MAP = {
     "aadhr": "aadhr", "aadhar": "aadhr", "aadhaar": "aadhr", "uidai": "aadhr", "aadhaar_info": "aadhr",
     "pincode": "pincode", "pin": "pincode", "pin_code": "pincode", "pincode_search": "pincode", "pinsearch": "pincode",
     "ifsc": "ifsc", "ifsc_info": "ifsc", "ifsc_search": "ifsc", "ifsc_lookup": "ifsc", "bank_branch": "ifsc",
+    "insta": "insta", "ig": "insta", "instagram": "insta", "insta_info": "insta", "instainfo": "insta", "instagram_info": "insta",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta"
 
 @app.route("/api")
 def api_typed():
@@ -965,6 +981,11 @@ def serve_api(slug):
         if uerr:
             env, code = api_error(key_row, slug, 502, "Upstream error", uerr)
             return json_out(env, code)
+        if slug == "insta" and isinstance(payload, dict) and payload.get("success") is False:
+            env, code = api_error(key_row, slug, 404, "User not found",
+                                  (payload.get("message") or
+                                   "no Instagram profile found for: " + term))
+            return json_out(env, code)
 
     # ---- success path
     if not is_cached:
@@ -972,7 +993,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
