@@ -831,8 +831,9 @@ def fetch_upstream(ep, term):
     headers = {"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)", "Accept": "application/json"}
     req = urllib.request.Request(url, headers=headers)
     t0 = time.time()
+    timeout = 20 if ep["slug"] in ("insta", "osint") else 15
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
         dt = round((time.time() - t0) * 1000, 1)
         if ep["slug"] == "pincode":
