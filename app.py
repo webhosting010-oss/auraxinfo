@@ -1144,9 +1144,14 @@ def normalize_tg(upstream, term):
     raw_phone = str((d or {}).get("phone_number") or "").strip()
     if isinstance(d, dict) and raw_phone and "FAILED" not in str(d):
         ctry, ccx = detect_country("", raw_phone)
+        digits = raw_phone.lstrip("+").replace(" ", "").replace("-", "")
+        # country-code prefix number se hata do (cc alag field me jata hai)
+        cc_digits = (ccx or "").lstrip("+")
+        if cc_digits and digits.startswith(cc_digits) and len(digits) > len(cc_digits):
+            digits = digits[len(cc_digits):]
         res["msg"] = "Details fetched"
         res["success"] = True
-        res["number"] = raw_phone.lstrip("+").replace(" ", "")
+        res["number"] = digits
         res["country"] = str(d.get("country") or ctry)
         res["country_code"] = ccx
         if d.get("verification"):
@@ -1295,8 +1300,6 @@ def fetch_upstream(ep, term):
     req = urllib.request.Request(url, headers=headers)
     t0 = time.time()
     timeout = 20 if ep["slug"] in ("insta", "osint") else 15
-    if ep["slug"] == "tg":
-        timeout = 25  # supabase upstream dheema (7-8s lag sakta hai)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
@@ -1448,13 +1451,6 @@ def serve_api(slug):
         payload, dt, err = domain_lookup(term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
-        if slug == "tg" and isinstance(payload, dict) and payload.get("success") is False:
-            # supabase upstream aksar "Failed to fetch external data" deta hai — ek light retry
-            payload2, dt2, err2 = fetch_upstream(ep, term)
-            if isinstance(payload2, dict) and payload2.get("success") is not False:
-                payload, dt, err = payload2, round(dt + dt2, 1), err2
-            else:
-                dt = round(dt + dt2, 1)
 
     # error handling SAB slugs ke liye (insta bhi)
     if not is_cached and payload is None:
