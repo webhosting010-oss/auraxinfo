@@ -1442,45 +1442,105 @@ def fetch_upstream(ep, term):
 DEFAULT_IMAGE_MODEL = "qwen/qwen-image-2.1-turbo"
 IMG_RESOLUTIONS = ("1K", "2K")
 
-# HuggingFace fallback — OpenRouter pe credits/permission fail ho to FLUX.2-klein se
-HF_IMAGE_URL = "https://router.huggingface.co/hf-inference/models/"
-HF_IMAGE_TOKEN = "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"
-HF_IMAGE_MODEL = "black-forest-labs/FLUX.2-klein-4B"
+# FLUX.2-klein fallback — OpenRouter pe credits/permission fail ho to free official space
+# (token attach karte hi ZeroGPU quota apne account se chalta hai — anonymous quota jaldi khatam hota hai)
+FLUX_SPACE_HOST = "https://black-forest-labs-flux-2-klein-4b.hf.space"
+FLUX_SPACE_TOKEN = "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"
+IMG_RATIO_DIMS = {"1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
+                  "4:3": (1152, 896), "3:4": (896, 1152), "3:2": (1216, 832), "2:3": (832, 1216)}
 
 def hf_image_fallback(prompt):
-    """OpenRouter fail hone pe HuggingFace Inference Providers (FLUX.2-klein) se banwalen.
+    """OpenRouter fail hone pe FLUX.2-klein official HF Space (free, keyless) se generate.
     Returns (payload|None, elapsed_ms, err)."""
     t0 = time.time()
+    ms = lambda: round((time.time() - t0) * 1000, 1)
+    ratio = (request.args.get("aspect_ratio") or request.args.get("ratio") or "").strip()
+    dims = IMG_RATIO_DIMS.get(ratio, (1024, 1024))
+    try:
+        w = int(request.args.get("width") or dims[0])
+        h = int(request.args.get("height") or dims[1])
+    except Exception:
+        w, h = dims
+    w = min(max(w, 256), 2048)
+    h = min(max(h, 256), 2048)
     req = urllib.request.Request(
-        HF_IMAGE_URL + HF_IMAGE_MODEL,
-        data=json.dumps({"inputs": prompt[:2000]}).encode("utf-8"),
-        headers={"Authorization": "Bearer " + HF_IMAGE_TOKEN,
+        FLUX_SPACE_HOST + "/gradio_api/call/infer",
+        data=json.dumps({"data": [prompt[:2000], [], "Distilled (4 steps)", 0, True,
+                                  w, h, 4, 1.0, False]}).encode("utf-8"),
+        headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
                  "Content-Type": "application/json",
-                 "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"},
+                 "Authorization": "Bearer " + FLUX_SPACE_TOKEN},
         method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            raw = resp.read()
-    except urllib.error.HTTPError as e:
-        try:
-            ebody = json.loads(e.read().decode("utf-8", "replace"))
-            emsg = ebody.get("error") or ""
-        except Exception:
-            emsg = ""
-        return None, round((time.time() - t0) * 1000, 1), \
-            emsg or f"hf fallback HTTP {e.code}"
+        ev = json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace"))
+        eid = ev.get("event_id") or ""
     except Exception as e:
-        return None, round((time.time() - t0) * 1000, 1), f"hf fallback error: {e}"
-    if not raw or raw[:4] not in (b"\x89PNG", b"\xff\xd8") and not raw[:5] == b"GIF89":
-        return None, round((time.time() - t0) * 1000, 1), "hf fallback returned no image bytes"
-    fmt = "png" if raw[:4] == b"\x89PNG" else ("gif" if raw[:5] == b"GIF89" else "jpg")
-    b64 = base64.b64encode(raw).decode("ascii")
-    out = {"model": HF_IMAGE_MODEL + " (HuggingFace)", "prompt": prompt[:2000],
-           "count": 1,
-           "images": [{"format": fmt, "base64": b64,
-                       "data_url": f"data:image/{fmt};base64,{b64}"}],
-           "fallback": "primary upstream fail — HuggingFace FLUX.2-klein se generate hua"}
-    return out, round((time.time() - t0) * 1000, 1), None
+        return None, ms(), f"flux-space error: {e}"
+    if not eid:
+        return None, ms(), "flux-space: no event id"
+    body = ""
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        time.sleep(2.5)
+        try:
+            r = urllib.request.urlopen(urllib.request.Request(
+                FLUX_SPACE_HOST + "/gradio_api/call/infer/" + eid,
+                headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
+                         "Authorization": "Bearer " + FLUX_SPACE_TOKEN}), timeout=15)
+            body = r.read().decode("utf-8", "replace")
+            if body:
+                break
+        except Exception:
+            continue
+    if not body:
+        return None, ms(), "flux-space: generation timed out"
+    out_url, seed, gerr = None, None, None
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("event: "):
+            evname = line[7:].strip()
+            if evname == "error":
+                gerr = "flux-space: generation error"
+                break
+            continue  # complete/heartbeat — data: line neeche hi aayegi
+        if line.startswith("data:"):
+            try:
+                arr = json.loads(line[5:].strip())
+            except Exception:
+                continue
+            if isinstance(arr, list) and arr:
+                item = arr[0]
+                if isinstance(item, dict) and item.get("url"):
+                    out_url = item["url"]
+                    seed = arr[1] if len(arr) > 1 else None
+                elif isinstance(item, str):
+                    gerr = gerr or "flux-space: " + item[:120]
+    if gerr and not out_url:
+        return None, ms(), gerr
+    if not out_url:
+        return None, ms(), "flux-space: no image in result"
+    fmt, b64, imgsz = "webp", None, len(body)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                out_url, headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"}), timeout=30) as resp:
+            img = resp.read()
+            ct = (resp.headers.get("Content-Type") or "").lower()
+            imgsz = len(img)
+        fmt = "webp" if ("webp" in ct or out_url.endswith(".webp")) else ("png" if "png" in ct else "jpg")
+        b64 = base64.b64encode(img).decode("ascii")
+    except Exception:
+        pass
+    first = {"format": fmt, "url": out_url}
+    if b64:
+        first["base64"] = b64
+        first["data_url"] = f"data:image/{fmt};base64,{b64}"
+    out = {"model": "black-forest-labs/FLUX.2-klein-4B (HuggingFace Space)",
+           "prompt": prompt[:2000], "count": 1, "images": [first],
+           "width": w, "height": h,
+           "fallback": "primary upstream fail — FLUX.2-klein (free space) se generate hua"}
+    if seed is not None:
+        out["seed"] = seed
+    return out, ms(), None
 
 def image_generate(prompt, ep):
     """OpenRouter Image API (POST JSON) — Qwen/Turbo jaise 61+ models. Returns (payload, dt, err)."""
