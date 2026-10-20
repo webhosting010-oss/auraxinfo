@@ -178,6 +178,8 @@ def init_db():
              "https://openrouter.ai/api/v1/images",
              "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",
              "prompt", 14, now_iso()))
+    # migration: osint endpoint ka brand name — "OSINT Leak Pro"
+    conn.execute("UPDATE endpoints SET name='OSINT Leak Pro' WHERE slug='osint' AND name!='OSINT Leak Pro'")
     # migration: tg endpoint -> {param} placeholder (auto username/userid)
     conn.execute(
         "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
