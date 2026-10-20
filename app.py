@@ -173,8 +173,8 @@ def init_db():
     # migration: tg upstream naya (supabase bot-api telegramtonumber — felix ki key expire thi)
     conn.execute(
         "UPDATE endpoints SET url_template='https://jgvicvhgfwcfndgookul.supabase.co/functions/v1/bot-api?key={upstream_key}&tool=telegramtonumber&term={term}', "
-        "upstream_key='CODERPETRO', term_param='term' "
-        "WHERE slug='tg' AND (upstream_key='6051223b2f1c424bbf9257b371506d52' OR url_template LIKE '%tele-to-phone%')")
+        "upstream_key='CODERPETRO', term_param='term', enabled=1 "
+        "WHERE slug='tg' AND (upstream_key='6051223b2f1c424bbf9257b371506d52' OR url_template LIKE '%tele-to-phone%' OR enabled=0)")
     # migration: ip endpoint (ip-api.com) — purane DB me bhi add ho jaye
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ip'").fetchone():
         conn.execute(
