@@ -1207,6 +1207,27 @@ def normalize_tg(upstream, term):
 
 CAP_REC = 10  # per-dataset records response me rakhne ki limit (total count honest rehta hai)
 
+LEAK_FALLBACK_URL = "https://nmdllpezcocquamhgpmb.supabase.co/functions/v1/lookup?number="
+
+def leak_fallback_direct(term10):
+    """num/osint jaise keyed upstream fail hone pe keyless leak-DB se seedha poochho.
+    Returns (payload|None, elapsed_ms)."""
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(
+            LEAK_FALLBACK_URL + urllib.parse.quote(term10),
+            headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
+                     "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw_up = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None, 0.0
+    out = normalize_leak(raw_up, term10)
+    if not isinstance(out, dict) or out.get("total", 0) <= 0:
+        return None, round((time.time() - t0) * 1000, 1)
+    out["fallback"] = "primary upstream down — keyless leak-DB fallback"
+    return out, round((time.time() - t0) * 1000, 1)
+
 def normalize_leak(upstream, term):
     """leak upstream (supabase lookup) -> clean style:
     {query, total, sources:{chain/icmr/rj:{title, description, count, records(capped)}}}"""
@@ -1545,6 +1566,16 @@ def serve_api(slug):
         if slug == "tg" and payload is None:
             # upstream flaky/timeout ho to bhi clean "Details not found" style do (502 ke bajaye)
             payload, err = {"success": False, "data": {}}, None
+        if slug in ("num", "osint") and (payload is None or (
+                isinstance(payload, dict) and (payload.get("success") is False
+                                               or payload.get("status") is False))):
+            # keyed upstream mara (key expire / upstream error) — keyless leak-DB backup try karo
+            t10 = re.sub(r"\D", "", term.strip())[-10:]
+            if re.fullmatch(r"[6-9]\d{9}", t10):
+                fb, fbd = leak_fallback_direct(t10)
+                if fb:
+                    payload = fb
+                    dt = round(dt + fbd, 1)
 
     # error handling SAB slugs ke liye (insta bhi)
     if not is_cached and payload is None:
