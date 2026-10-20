@@ -143,8 +143,8 @@ def init_db():
         rows = [
             ("num",    "Number Info",       "📱", "http://uersxinfo.in/api?key={upstream_key}&type=mobile&term={term}",
              "numcudt", "term", 1),
-            ("tg",     "TG to Number",      "📞", "https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}",
-             "6051223b2f1c424bbf9257b371506d52", "username", 2),
+            ("tg",     "TG to Number",      "📞", "https://jgvicvhgfwcfndgookul.supabase.co/functions/v1/bot-api?key={upstream_key}&tool=telegramtonumber&term={term}",
+             "CODERPETRO", "term", 2),
             ("numpak", "Pakistan Number",   "🇵🇰", "http://wasifali.biz.id/public_apis/sim-info-api.php?search={term}",
              "", "", 3),
             ("osint",  "OSINT Search",      "🔎", "https://l34k-osint.onrender.com/search?key={upstream_key}&query={term}",
@@ -170,6 +170,11 @@ def init_db():
     conn.execute(
         "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
         "term_param='username' WHERE slug='tg' AND url_template LIKE '%username={term}%'")
+    # migration: tg upstream naya (supabase bot-api telegramtonumber — felix ki key expire thi)
+    conn.execute(
+        "UPDATE endpoints SET url_template='https://jgvicvhgfwcfndgookul.supabase.co/functions/v1/bot-api?key={upstream_key}&tool=telegramtonumber&term={term}', "
+        "upstream_key='CODERPETRO', term_param='term' "
+        "WHERE slug='tg' AND (upstream_key='6051223b2f1c424bbf9257b371506d52' OR url_template LIKE '%tele-to-phone%')")
     # migration: ip endpoint (ip-api.com) — purane DB me bhi add ho jaye
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ip'").fetchone():
         conn.execute(
@@ -1130,26 +1135,25 @@ def detect_country(ccode, raw_number):
     return "Unknown", "-"
 
 def normalize_tg(upstream, term):
-    """tg endpoint ko user-started clean style me normalize karo:
-    {result:{country,country_code,msg,number,success,[tg_username],tg_id}, status, cached}"""
+    """tg upstream (supabase bot-api telegramtonumber) -> user-started clean style:
+    {result:{country,country_code,verification,msg,number,success,[tg_username],tg_id}, status, cached}"""
     numeric = term.lstrip("@").isdigit()
     res = {"country": "Unknown", "country_code": "-", "msg": "Details not found",
            "number": "", "success": False}
-    phones = upstream.get("phone") if isinstance(upstream, dict) else None
-    if isinstance(phones, list) and phones:
-        p = phones[0] if isinstance(phones[0], dict) else {}
-        raw = str(p.get("number") or "").strip()
-        if raw:
-            ctry, ccx = detect_country(p.get("country_code") or "", raw)
-            res["msg"] = "Details fetched"
-            res["success"] = True
-            res["number"] = raw.lstrip("+")
-            res["country"] = ctry
-            res["country_code"] = ccx
-            if not numeric:
-                uname = upstream.get("username") or term
-                res["tg_username"] = str(uname).lstrip("@")
-            res["tg_id"] = str(upstream.get("tg_id") or term)
+    d = upstream.get("data") if isinstance(upstream, dict) else None
+    raw_phone = str((d or {}).get("phone_number") or "").strip()
+    if isinstance(d, dict) and raw_phone and "FAILED" not in str(d):
+        ctry, ccx = detect_country("", raw_phone)
+        res["msg"] = "Details fetched"
+        res["success"] = True
+        res["number"] = raw_phone.lstrip("+").replace(" ", "")
+        res["country"] = str(d.get("country") or ctry)
+        res["country_code"] = ccx
+        if d.get("verification"):
+            res["verification"] = str(d["verification"])
+        if not numeric:
+            res["tg_username"] = term.lstrip("@")
+        res["tg_id"] = str(d.get("telegram_id") or "")
     return {"result": res, "status": bool(res["success"]), "cached": False}
 
 def normalize_pak(upstream):
@@ -1279,15 +1283,20 @@ def resolve_term_param(ep, term):
 
 def fetch_upstream(ep, term):
     """Call upstream URL template, return (parsed_json_or_None, elapsed_ms, error_text)."""
+    sterm = term.strip()
+    if (ep["slug"] or "") == "tg" and not sterm.lstrip("@").isdigit() and not sterm.startswith("@"):
+        sterm = "@" + sterm  # naya supabase upstream ko @username chahiye
     url = (ep["url_template"]
            .replace("{upstream_key}", urllib.parse.quote(ep["upstream_key"] or ""))
-           .replace("{param}", resolve_term_param(ep, term))
-           .replace("{term}", urllib.parse.quote(term)))
+           .replace("{param}", resolve_term_param(ep, sterm))
+           .replace("{term}", urllib.parse.quote(sterm)))
     headers = {"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)", "Accept": "application/json",
                "Accept-Language": "en-US,en;q=0.9"}
     req = urllib.request.Request(url, headers=headers)
     t0 = time.time()
     timeout = 20 if ep["slug"] in ("insta", "osint") else 15
+    if ep["slug"] == "tg":
+        timeout = 25  # supabase upstream dheema (7-8s lag sakta hai)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
@@ -1439,6 +1448,13 @@ def serve_api(slug):
         payload, dt, err = domain_lookup(term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
+        if slug == "tg" and isinstance(payload, dict) and payload.get("success") is False:
+            # supabase upstream aksar "Failed to fetch external data" deta hai — ek light retry
+            payload2, dt2, err2 = fetch_upstream(ep, term)
+            if isinstance(payload2, dict) and payload2.get("success") is not False:
+                payload, dt, err = payload2, round(dt + dt2, 1), err2
+            else:
+                dt = round(dt + dt2, 1)
 
     # error handling SAB slugs ke liye (insta bhi)
     if not is_cached and payload is None:
