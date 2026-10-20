@@ -1147,7 +1147,7 @@ def tg_fallback_payload(term):
             TG_FALLBACK_URL + urllib.parse.quote("@" + uname),
             headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
                      "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             d = json.loads(resp.read().decode("utf-8", "replace"))
     except Exception:
         return None
@@ -1492,6 +1492,9 @@ def serve_api(slug):
             fb = tg_fallback_payload(term)
             if fb:
                 payload = fb
+        if slug == "tg" and payload is None:
+            # upstream flaky/timeout ho to bhi clean "Details not found" style do (502 ke bajaye)
+            payload, err = {"success": False, "data": {}}, None
 
     # error handling SAB slugs ke liye (insta bhi)
     if not is_cached and payload is None:
