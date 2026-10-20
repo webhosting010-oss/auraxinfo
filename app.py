@@ -161,6 +161,8 @@ def init_db():
              "", "username", 10),
             ("domain",  "Domain Info",      "🔗", "https://rdap.org/domain/{term}",
              "", "domain", 11),
+            ("leak",    "Leak OSINT",       "🔍", "https://nmdllpezcocquamhgpmb.supabase.co/functions/v1/lookup?number={term}",
+             "", "number", 13),
         ]
         for i, (slug, name, emoji, tpl, ekey, tp, srt) in enumerate(rows):
             conn.execute(
@@ -199,6 +201,14 @@ def init_db():
     conn.execute(
         "UPDATE endpoints SET url_template=replace(url_template, 'proxy,hosting', 'proxy,hosting,query') "
         "WHERE slug='ip' AND url_template LIKE '%hosting' AND url_template NOT LIKE '%query'")
+    # migration: leak endpoint (supabase leak-DB lookup — keyless upstream)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='leak'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("leak", "Leak OSINT", "🔍",
+             "https://nmdllpezcocquamhgpmb.supabase.co/functions/v1/lookup?number={term}",
+             "", "number", 13, now_iso()))
     # migration: aadhr endpoint (Aadhaar -> SIM records) — purane DB me bhi add ho jaye
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='aadhr'").fetchone():
         conn.execute(
@@ -1195,6 +1205,35 @@ def normalize_tg(upstream, term):
         res["tg_id"] = str(d.get("telegram_id") or "")
     return {"result": res, "status": bool(res["success"]), "cached": False}
 
+CAP_REC = 10  # per-dataset records response me rakhne ki limit (total count honest rehta hai)
+
+def normalize_leak(upstream, term):
+    """leak upstream (supabase lookup) -> clean style:
+    {query, total, sources:{chain/icmr/rj:{title, description, count, records(capped)}}}"""
+    r = upstream if isinstance(upstream, dict) else None
+    if isinstance(r, dict) and isinstance(r.get("result"), dict):
+        r = r["result"]  # naya supabase lookup double-wrap karta hai (Ankit wrapper ke andar Owner_004)
+        if isinstance(r, dict) and isinstance(r.get("result"), dict):
+            r = r["result"]
+    sources, total = {}, 0
+    for key in ("chain", "icmr", "rj"):
+        sec = (r or {}).get(key)
+        if not isinstance(sec, dict):
+            continue
+        recs = sec.get("records") or sec.get("results") or []
+        if not isinstance(recs, list):
+            recs = []
+        cnt = sec.get("count") or sec.get("total") or len(recs)
+        if not isinstance(cnt, int):
+            cnt = len(recs)
+        src = {"title": sec.get("title") or key, "description": sec.get("description") or "",
+               "count": cnt, "records": recs[:CAP_REC]}
+        if len(recs) > CAP_REC:
+            src["note"] = f"pehle {CAP_REC} records dikhaye (total {cnt} mila)"
+        sources[key] = src
+        total += cnt
+    return {"query": term, "total": total, "sources": sources, "cached": False}
+
 def normalize_pak(upstream):
     """numpak upstream (sim-info-api) -> clean {count, records} style.
     Upstream ka apna developer/telegram/channel branding hata do —
@@ -1383,8 +1422,9 @@ TYPE_MAP = {
     "insta": "insta", "ig": "insta", "instagram": "insta", "insta_info": "insta", "instainfo": "insta", "instagram_info": "insta",
     "snap": "snap", "snapchat": "snap", "snap_info": "snap", "snapchat_info": "snap", "snapchat_lookup": "snap",
     "domain": "domain", "whois": "domain", "domain_info": "domain", "site_info": "domain", "website_info": "domain", "url_info": "domain",
+    "leak": "leak", "leak_info": "leak", "leakinfo": "leak", "leak_search": "leak", "leaksearch": "leak", "db_leak": "leak",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak"
 
 @app.route("/api")
 def api_typed():
@@ -1483,6 +1523,16 @@ def serve_api(slug):
     elif slug == "domain":
         # hamara apna multi-source domain OSINT (RDAP + DNS + IP + HTTP, parallel)
         payload, dt, err = domain_lookup(term)
+    elif slug == "leak":
+        # supabase leak-DB lookup (keyless) — Indian mobile number validate karke 10-digit bhejo
+        t10 = re.sub(r"\D", "", term.strip())
+        if not re.fullmatch(r"(91|0)?[6-9]\d{9}", t10):
+            payload, dt, err = None, 0.0, "invalid phone number format"
+        else:
+            term = t10[-10:]
+            payload, dt, err = fetch_upstream(ep, term)
+            if isinstance(payload, dict):
+                payload = normalize_leak(payload, term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg" and isinstance(payload, dict) and \
@@ -1516,6 +1566,10 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 404, "Snapchat user not found",
                                   "no Snapchat profile found for: " + term)
             return json_out(env, code)
+        if slug == "leak" and "invalid" in (err or "").lower():
+            env, code = api_error(key_row, slug, 400, "Invalid phone number",
+                                  "use Indian mobile number, e.g. 9628060865")
+            return json_out(env, code)
         env, code = api_error(key_row, slug, 502, "Upstream failure",
                               err or "unknown upstream error")
         return json_out(env, code)
@@ -1541,7 +1595,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
@@ -1553,6 +1607,10 @@ def serve_api(slug):
         if slug == "pincode" and isinstance(payload, dict) and not payload.get("total"):
             env, code = api_error(key_row, slug, 404, "Pincode not found",
                                   "no post offices found for: " + term)
+            return json_out(env, code)
+        if slug == "leak" and isinstance(payload, dict) and not payload.get("total"):
+            env, code = api_error(key_row, slug, 404, "No leak data found",
+                                  "no leak records found for: " + term)
             return json_out(env, code)
         if slug == "ip" and isinstance(payload, dict) and payload.get("status") == "fail":
             env, code = api_error(key_row, slug, 404, "IP not found",
