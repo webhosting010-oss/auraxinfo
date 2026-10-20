@@ -1442,31 +1442,33 @@ def fetch_upstream(ep, term):
 DEFAULT_IMAGE_MODEL = "qwen/qwen-image-2.1-turbo"
 IMG_RESOLUTIONS = ("1K", "2K")
 
-# FLUX.2-klein fallback — OpenRouter pe credits/permission fail ho to free official space
+# FLUX.2-klein fallback — OpenRouter pe credits/permission fail ho to free official Spaces
 # (token attach karte hi ZeroGPU quota apne account se chalta hai — anonymous quota jaldi khatam hota hai)
-FLUX_SPACE_HOST = "https://black-forest-labs-flux-2-klein-4b.hf.space"
 FLUX_SPACE_TOKEN = "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"
 IMG_RATIO_DIMS = {"1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
                   "4:3": (1152, 896), "3:4": (896, 1152), "3:2": (1216, 832), "2:3": (832, 1216)}
 
-def hf_image_fallback(prompt):
-    """OpenRouter fail hone pe FLUX.2-klein official HF Space (free, keyless) se generate.
-    Returns (payload|None, elapsed_ms, err)."""
+FLUX_SPACES = [
+    # (host, fn, kind, model_label) — kind: "klein"(10-param) / "schnell"(6-param)
+    ("https://black-forest-labs-flux-2-klein-4b.hf.space", "infer", "klein",
+     "black-forest-labs/FLUX.2-klein-4B"),
+    ("https://black-forest-labs-flux-1-schnell.hf.space", "infer", "schnell",
+     "black-forest-labs/FLUX.1-schnell"),
+    ("https://black-forest-labs-flux-2-klein-9b.hf.space", "generate", "klein",
+     "black-forest-labs/FLUX.2-klein-9B"),
+]
+
+def _flux_space_call(host, fn, kind, prompt, w, h):
+    """HF Space gradio API se ek image — (out_url, seed, elapsed_ms, err|None)."""
     t0 = time.time()
     ms = lambda: round((time.time() - t0) * 1000, 1)
-    ratio = (request.args.get("aspect_ratio") or request.args.get("ratio") or "").strip()
-    dims = IMG_RATIO_DIMS.get(ratio, (1024, 1024))
-    try:
-        w = int(request.args.get("width") or dims[0])
-        h = int(request.args.get("height") or dims[1])
-    except Exception:
-        w, h = dims
-    w = min(max(w, 256), 2048)
-    h = min(max(h, 256), 2048)
+    if kind == "schnell":
+        data = [prompt[:2000], 0, True, w, h, 4]
+    else:
+        data = [prompt[:2000], [], "Distilled (4 steps)", 0, True, w, h, 4, 1.0, False]
     req = urllib.request.Request(
-        FLUX_SPACE_HOST + "/gradio_api/call/infer",
-        data=json.dumps({"data": [prompt[:2000], [], "Distilled (4 steps)", 0, True,
-                                  w, h, 4, 1.0, False]}).encode("utf-8"),
+        host + "/gradio_api/call/" + fn,
+        data=json.dumps({"data": data}).encode("utf-8"),
         headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
                  "Content-Type": "application/json",
                  "Authorization": "Bearer " + FLUX_SPACE_TOKEN},
@@ -1475,16 +1477,16 @@ def hf_image_fallback(prompt):
         ev = json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace"))
         eid = ev.get("event_id") or ""
     except Exception as e:
-        return None, ms(), f"flux-space error: {e}"
+        return None, None, ms(), f"flux-space error: {e}"
     if not eid:
-        return None, ms(), "flux-space: no event id"
+        return None, None, ms(), "flux-space: no event id"
     body = ""
-    deadline = time.time() + 90
+    deadline = time.time() + 60
     while time.time() < deadline:
         time.sleep(2.5)
         try:
             r = urllib.request.urlopen(urllib.request.Request(
-                FLUX_SPACE_HOST + "/gradio_api/call/infer/" + eid,
+                host + "/gradio_api/call/" + fn + "/" + eid,
                 headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
                          "Authorization": "Bearer " + FLUX_SPACE_TOKEN}), timeout=15)
             body = r.read().decode("utf-8", "replace")
@@ -1493,7 +1495,7 @@ def hf_image_fallback(prompt):
         except Exception:
             continue
     if not body:
-        return None, ms(), "flux-space: generation timed out"
+        return None, None, ms(), "flux-space: generation timed out"
     out_url, seed, gerr = None, None, None
     for line in body.splitlines():
         line = line.strip()
@@ -1514,33 +1516,49 @@ def hf_image_fallback(prompt):
                     out_url = item["url"]
                     seed = arr[1] if len(arr) > 1 else None
                 elif isinstance(item, str):
-                    gerr = gerr or "flux-space: " + item[:120]
-    if gerr and not out_url:
-        return None, ms(), gerr
-    if not out_url:
-        return None, ms(), "flux-space: no image in result"
-    fmt, b64, imgsz = "webp", None, len(body)
+                    gerr = "flux-space: " + item[:120]
+    return out_url, seed, ms(), gerr
+
+def hf_image_fallback(prompt):
+    """OpenRouter fail hone pe free HF Spaces se generate — 3-space chain.
+    (FLUX.2-klein-4B -> FLUX.1-schnell -> FLUX.2-klein-9B). Returns (payload|None, elapsed_ms, err)."""
+    t0 = time.time()
+    ms = lambda: round((time.time() - t0) * 1000, 1)
+    ratio = (request.args.get("aspect_ratio") or request.args.get("ratio") or "").strip()
+    dims = IMG_RATIO_DIMS.get(ratio, (1024, 1024))
     try:
-        with urllib.request.urlopen(urllib.request.Request(
-                out_url, headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"}), timeout=30) as resp:
-            img = resp.read()
-            ct = (resp.headers.get("Content-Type") or "").lower()
-            imgsz = len(img)
-        fmt = "webp" if ("webp" in ct or out_url.endswith(".webp")) else ("png" if "png" in ct else "jpg")
-        b64 = base64.b64encode(img).decode("ascii")
+        w = int(request.args.get("width") or dims[0])
+        h = int(request.args.get("height") or dims[1])
     except Exception:
-        pass
-    first = {"format": fmt, "url": out_url}
-    if b64:
-        first["base64"] = b64
-        first["data_url"] = f"data:image/{fmt};base64,{b64}"
-    out = {"model": "black-forest-labs/FLUX.2-klein-4B (HuggingFace Space)",
-           "prompt": prompt[:2000], "count": 1, "images": [first],
-           "width": w, "height": h,
-           "fallback": "primary upstream fail — FLUX.2-klein (free space) se generate hua"}
-    if seed is not None:
-        out["seed"] = seed
-    return out, ms(), None
+        w, h = dims
+    w = min(max(w, 256), 2048)
+    h = min(max(h, 256), 2048)
+    last_err = None
+    for host, fn, kind, label in FLUX_SPACES:
+        out_url, seed, sdt, serr = _flux_space_call(host, fn, kind, prompt, w, h)
+        if out_url:
+            fmt, b64 = "webp", None
+            try:
+                with urllib.request.urlopen(urllib.request.Request(
+                        out_url, headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"}), timeout=30) as resp:
+                    img = resp.read()
+                    ct = (resp.headers.get("Content-Type") or "").lower()
+                fmt = "webp" if ("webp" in ct or out_url.endswith(".webp")) else ("png" if "png" in ct else "jpg")
+                b64 = base64.b64encode(img).decode("ascii")
+            except Exception:
+                pass
+            first = {"format": fmt, "url": out_url}
+            if b64:
+                first["base64"] = b64
+                first["data_url"] = f"data:image/{fmt};base64,{b64}"
+            out = {"model": label + " (HuggingFace Space)", "prompt": prompt[:2000],
+                   "count": 1, "images": [first], "width": w, "height": h,
+                   "fallback": f"primary upstream fail — {label.split('/')[-1]} (free space) se generate hua"}
+            if seed is not None:
+                out["seed"] = seed
+            return out, ms(), None
+        last_err = serr or "flux-space: unknown failure"
+    return None, ms(), last_err
 
 def image_generate(prompt, ep):
     """OpenRouter Image API (POST JSON) — Qwen/Turbo jaise 61+ models. Returns (payload, dt, err)."""
