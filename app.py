@@ -1456,6 +1456,8 @@ FLUX_SPACES = [
      "black-forest-labs/FLUX.1-schnell"),
     ("https://black-forest-labs-flux-2-klein-9b.hf.space", "generate", "klein",
      "black-forest-labs/FLUX.2-klein-9B"),
+    ("https://image.pollinations.ai", "prompt", "pollinations",
+     "Pollinations (Flux)"),
 ]
 
 def _flux_space_call(host, fn, kind, prompt, w, h):
@@ -1535,6 +1537,29 @@ def hf_image_fallback(prompt):
     h = min(max(h, 256), 2048)
     last_err = None
     for host, fn, kind, label in FLUX_SPACES:
+        if kind == "pollinations":
+            # pollinations free tier — direct image URL, 1 image/45s per IP limit
+            try:
+                t2 = time.time()
+                pu = (host + "/prompt/" + urllib.parse.quote(prompt[:800])
+                      + f"?width={w}&height={h}&nologo=true")
+                with urllib.request.urlopen(urllib.request.Request(
+                        pu, headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"}), timeout=120) as resp:
+                    img = resp.read()
+                    ct = (resp.headers.get("Content-Type") or "").lower()
+                if (img[:4] == b"\x89PNG" or img[:2] == b"\xff\xd8" or img[:4] == b"RIFF") and "image" in ct:
+                    fmt = "png" if img[:4] == b"\x89PNG" else ("jpg" if img[:2] == b"\xff\xd8" else "webp")
+                    b64 = base64.b64encode(img).decode("ascii")
+                    out = {"model": label, "prompt": prompt[:2000], "count": 1,
+                           "images": [{"format": fmt, "url": pu, "base64": b64,
+                                       "data_url": f"data:image/{fmt};base64,{b64}"}],
+                           "width": w, "height": h,
+                           "fallback": "primary upstream fail — Pollinations (free) se generate hua"}
+                    return out, round((time.time() - t0) * 1000, 1), None
+                last_err = "pollinations: no image (rate-limited, try again in 45s)"
+            except Exception as e:
+                last_err = f"pollinations error: {e}"
+            continue
         out_url, seed, sdt, serr = _flux_space_call(host, fn, kind, prompt, w, h)
         if out_url:
             fmt, b64 = "webp", None
