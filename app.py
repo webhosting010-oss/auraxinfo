@@ -175,6 +175,8 @@ def init_db():
         "UPDATE endpoints SET url_template='https://jgvicvhgfwcfndgookul.supabase.co/functions/v1/bot-api?key={upstream_key}&tool=telegramtonumber&term={term}', "
         "upstream_key='CODERPETRO', term_param='term', enabled=1 "
         "WHERE slug='tg' AND (upstream_key='6051223b2f1c424bbf9257b371506d52' OR url_template LIKE '%tele-to-phone%' OR enabled=0)")
+    # tg naye normalize style ke baad purane cached payload outdated (91 prefix / verification)
+    conn.execute("DELETE FROM cache WHERE slug='tg'")
     # migration: ip endpoint (ip-api.com) — purane DB me bhi add ho jaye
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ip'").fetchone():
         conn.execute(
@@ -1154,8 +1156,6 @@ def normalize_tg(upstream, term):
         res["number"] = digits
         res["country"] = str(d.get("country") or ctry)
         res["country_code"] = ccx
-        if d.get("verification"):
-            res["verification"] = str(d["verification"])
         if not numeric:
             res["tg_username"] = term.lstrip("@")
         res["tg_id"] = str(d.get("telegram_id") or "")
