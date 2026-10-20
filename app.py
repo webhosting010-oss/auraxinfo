@@ -181,6 +181,14 @@ def init_db():
              "prompt", 14, now_iso()))
     # migration: osint endpoint ka brand name — "OSINT Leak Pro"
     conn.execute("UPDATE endpoints SET name='OSINT Leak Pro' WHERE slug='osint' AND name!='OSINT Leak Pro'")
+    # migration: upi endpoint (Airtel paydigi unauth VPA verify — keyless)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='upi'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("upi", "UPI Info", "💸",
+             "https://paydigi.airtel.in/web/pg-service/v1/validate/vpa/{term}",
+             "", "vpa", 16, now_iso()))
     # migration: imei endpoint (local TAC database — MoazEb/tac-database, keyless)
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='imei'").fetchone():
         conn.execute(
@@ -1448,6 +1456,78 @@ def fetch_upstream(ep, term):
     except Exception as e:
         return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
 
+# -------------------------------------------------------- UPI info (Airtel paydigi)
+UPI_HANDLE_PSP = {
+    "ybl": "PhonePe (Yes Bank)", "ibl": "PhonePe (ICICI)", "yapl": "Yes Bank App",
+    "okaxis": "Google Pay (Axis)", "okhdfcbank": "Google Pay (HDFC)", "oksbi": "Google Pay (SBI)",
+    "okicici": "Google Pay (ICICI)", "okbizaxis": "Google Pay (Axis Business)",
+    "paytm": "Paytm (Paytm Payments Bank)", "paytmwallet": "Paytm Wallet",
+    "apl": "Amazon Pay (ICICI)", "upi": "BHIM UPI",
+    "waaxis": "Axis Quick Pay", "waicici": "ICICI Quick Pay", "wahdfcbank": "HDFC Quick Pay",
+    "wasbi": "SBI Quick Pay", "wapaytm": "Paytm Quick Pay", "axl": "Axis Bank",
+    "axis": "Axis Bank", "freecharge": "Freecharge (Axis)", "slice": "slice (SBM)",
+    "ikwik": "CRED (IDFC)", "jio": "Jio UPI (Jio Payments Bank)", "fbl": "Fed Bank",
+}
+UPI_SUFFIX_SWEEP = ["ybl", "okaxis", "okhdfcbank", "oksbi", "paytm", "ibl", "apl",
+                    "waaxis", "waicici", "wapaytm", "yapl", "upi", "axl", "freecharge"]
+
+def upi_verify_vpa(vpa):
+    """Airtel paydigi unauth UPI verify — (data|None, elapsed_ms, err). 429 pe 2.5s wait + 1 retry."""
+    t0 = time.time()
+    ms = lambda: round((time.time() - t0) * 1000, 1)
+    headers = {"User-Agent": "Mozilla/5.0 Chrome/101", "Accept": "application/json",
+               "channel-id": "WEB_UNAUTH", "Origin": "https://www.airtel.in",
+               "Referer": "https://www.airtel.in/"}
+    for attempt in range(2):
+        req = urllib.request.Request(
+            "https://paydigi.airtel.in/web/pg-service/v1/validate/vpa/" + urllib.parse.quote(vpa),
+            headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace")).get("data"), ms(), None
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                time.sleep(5)  # rate-limit — zyada saans leke retry
+                continue
+            return None, ms(), f"upstream rate-limited (429)" if e.code == 429 else f"upi upstream HTTP {e.code}"
+        except Exception as e:
+            return None, ms(), f"upi upstream error: {e}"
+            return None, ms(), "upstream rate-limited (429)"
+
+def upi_lookup(term):
+    """VPA (name@handle) -> verify; ya 10-digit mobile -> sabhi PSP handles pe sweep."""
+    t0 = time.time()
+    ms = lambda: round((time.time() - t0) * 1000, 1)
+    vpa = term.strip().lower().replace(" ", "")
+    if "@" in vpa:
+        if not re.fullmatch(r"[a-z0-9.\-_]{2,64}@[a-z]{2,20}", vpa):
+            return None, ms(), "invalid vpa format (use like name@ybl)"
+        data, _, err = upi_verify_vpa(vpa)
+        if err:
+            return None, ms(), err
+        if not data or not data.get("vpaValid"):
+            return None, ms(), "vpa not valid (no UPI account on this handle)"
+        out = {"vpa": data.get("vpa") or vpa, "valid": True,
+               "payee_name": data.get("payeeAccountName") or None,
+               "psp": UPI_HANDLE_PSP.get(vpa.split("@")[1], "Unknown PSP"),
+               "handle": vpa.split("@")[1]}
+        return out, ms(), None
+    num = re.sub(r"\D", "", vpa)
+    if not re.fullmatch(r"[6-9]\d{9}", num):
+        return None, ms(), "invalid input (10-digit mobile number ya VPA like name@ybl do)"
+    found = []
+    for sfx in UPI_SUFFIX_SWEEP:
+        d, _, err = upi_verify_vpa(num + "@" + sfx)
+        if d and d.get("vpaValid"):
+            name = d.get("payeeAccountName") or None
+            found.append({"vpa": num + "@" + sfx, "payee_name": name,
+                          "psp": UPI_HANDLE_PSP.get(sfx, "Unknown PSP")})
+    if not found:
+        return None, ms(), "no upi ids found for this number"
+    return {"number": num, "found": len(found),
+            "note": "UPI-number alias based verification — payee_name sirf PSP disclose kare to aata hai",
+            "vpas": found}, ms(), None
+
 # -------------------------------------------------------- IMEI info (local TAC db)
 TAC_DB = None
 TAC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tac_full.csv")
@@ -1735,8 +1815,9 @@ TYPE_MAP = {
     "image": "image", "img": "image", "image_gen": "image", "imagegen": "image", "generate_image": "image",
     "ai_image": "image", "text2img": "image", "make_image": "image", "pic": "image",
     "imei": "imei", "imei_info": "imei", "imeilookup": "imei", "imei_lookup": "imei", "device_info": "imei", "tac": "imei",
+    "upi": "upi", "upi_info": "upi", "upilookup": "upi", "upi_lookup": "upi", "vpa": "upi", "vpa_info": "upi", "upi_verify": "upi",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak, image, imei"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak, image, imei, upi"
 
 @app.route("/api")
 def api_typed():
@@ -1845,6 +1926,9 @@ def serve_api(slug):
             payload, dt, err = fetch_upstream(ep, term)
             if isinstance(payload, dict):
                 payload = normalize_leak(payload, term)
+    elif slug == "upi":
+        # Airtel paydigi unauth UPI verify — VPA ya mobile-number sweep (14 PSP handles)
+        payload, dt, err = upi_lookup(term)
     elif slug == "imei":
         # local TAC database (11.8MB CSV) — Luhn + brand/model, zero upstream, kabhi down nahi
         payload, dt, err = imei_lookup(term)
@@ -1902,6 +1986,19 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 400, "Invalid phone number",
                                   "use Indian mobile number, e.g. 9628060865")
             return json_out(env, code)
+        if slug == "upi" and "rate-limited" in (err or "").lower():
+            env, code = api_error(key_row, slug, 429, "UPI upstream busy",
+                                  "Airtel UPI gateway rate-limited ho gaya — koi seconds me retry karo")
+            return json_out(env, code)
+        if slug == "upi" and "invalid" in (err or "").lower():
+            env, code = api_error(key_row, slug, 400, "Invalid input",
+                                  "pass a 10-digit mobile number OR a VPA like name@ybl")
+            return json_out(env, code)
+        if slug == "upi" and ("not valid" in (err or "").lower()
+                              or "no upi" in (err or "").lower()):
+            env, code = api_error(key_row, slug, 404, "UPI not found",
+                                  "no valid UPI ID / VPA found for: " + term[:60])
+            return json_out(env, code)
         if slug == "imei" and "invalid imei" in (err or "").lower():
             env, code = api_error(key_row, slug, 400, "Invalid IMEI",
                                   "IMEI must be exactly 15 digits (e.g. 861536030196001)")
@@ -1954,7 +2051,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image", "imei") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image", "imei", "upi") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
