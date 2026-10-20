@@ -9,6 +9,7 @@ import re
 import time
 import sqlite3
 import secrets
+import csv
 import urllib.request
 import urllib.parse
 import base64
@@ -180,6 +181,13 @@ def init_db():
              "prompt", 14, now_iso()))
     # migration: osint endpoint ka brand name — "OSINT Leak Pro"
     conn.execute("UPDATE endpoints SET name='OSINT Leak Pro' WHERE slug='osint' AND name!='OSINT Leak Pro'")
+    # migration: imei endpoint (local TAC database — MoazEb/tac-database, keyless)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='imei'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("imei", "IMEI Info", "📲",
+             "", "", "imei", 15, now_iso()))
     # migration: tg endpoint -> {param} placeholder (auto username/userid)
     conn.execute(
         "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
@@ -1440,6 +1448,60 @@ def fetch_upstream(ep, term):
     except Exception as e:
         return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
 
+# -------------------------------------------------------- IMEI info (local TAC db)
+TAC_DB = None
+TAC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tac_full.csv")
+
+def _load_tac_db():
+    """tac_full.csv (MoazEb/tac-database, ~200K devices) ek baar memory me — TAC -> (brand, model)."""
+    global TAC_DB
+    if TAC_DB is None:
+        d = {}
+        try:
+            with open(TAC_PATH, encoding="utf-8", errors="replace") as f:
+                r = csv.reader(f)
+                next(r, None)
+                for row in r:
+                    if len(row) >= 3 and row[1].strip().isdigit():
+                        d[row[1].strip()] = (row[0].strip(), row[2].strip())
+        except Exception:
+            pass
+        TAC_DB = d
+    return TAC_DB
+
+REPORTING_BODY = {
+    "01": "PTCRB (USA)", "02": "PTCRB (USA)", "35": "BABT (UK)", "44": "BABT (UK)",
+    "49": "CETECOM ICT (Germany)", "86": "TAF (China)", "91": "TAF (China)",
+    "98": "TAF (China)", "99": "JATE (Japan)",
+}
+
+def imei_lookup(term):
+    """IMEI (15-digit) -> Luhn verify + local TAC database se brand/model. Zero upstream."""
+    t0 = time.time()
+    ms = lambda: round((time.time() - t0) * 1000, 1)
+    imei = re.sub(r"\D", "", term)
+    if len(imei) != 15:
+        return None, ms(), "invalid imei length (need a 15-digit IMEI)"
+    s = 0
+    for i, ch in enumerate(reversed(imei[:14])):
+        d = int(ch)
+        if i % 2 == 0:
+            d *= 2
+            if d > 9:
+                d -= 9
+        s += d
+    valid = ((10 - s % 10) % 10) == int(imei[14])
+    tac = imei[:8]
+    rec = _load_tac_db().get(tac)
+    if not rec:
+        return None, ms(), f"tac {tac} not found in database"
+    brand, specs = rec
+    model = specs.split(",", 1)[1].strip() if "," in specs else specs.strip()
+    out = {"imei": imei, "valid": valid, "check_digit": int(imei[14]),
+           "reporting_body": REPORTING_BODY.get(imei[:2]),
+           "tac": tac, "brand": brand, "model": model, "full_specs": specs}
+    return out, ms(), None
+
 # ------------------------------------------------- AI image generate (OpenRouter)
 DEFAULT_IMAGE_MODEL = "qwen/qwen-image-2.1-turbo"
 IMG_RESOLUTIONS = ("1K", "2K")
@@ -1672,8 +1734,9 @@ TYPE_MAP = {
     "leak": "leak", "leak_info": "leak", "leakinfo": "leak", "leak_search": "leak", "leaksearch": "leak", "db_leak": "leak",
     "image": "image", "img": "image", "image_gen": "image", "imagegen": "image", "generate_image": "image",
     "ai_image": "image", "text2img": "image", "make_image": "image", "pic": "image",
+    "imei": "imei", "imei_info": "imei", "imeilookup": "imei", "imei_lookup": "imei", "device_info": "imei", "tac": "imei",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak, image"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak, image, imei"
 
 @app.route("/api")
 def api_typed():
@@ -1782,6 +1845,9 @@ def serve_api(slug):
             payload, dt, err = fetch_upstream(ep, term)
             if isinstance(payload, dict):
                 payload = normalize_leak(payload, term)
+    elif slug == "imei":
+        # local TAC database (11.8MB CSV) — Luhn + brand/model, zero upstream, kabhi down nahi
+        payload, dt, err = imei_lookup(term)
     elif slug == "image":
         # OpenRouter Image API — POST JSON, model/aspect_ratio/resolution optional params
         if len(term) < 3:
@@ -1836,6 +1902,15 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 400, "Invalid phone number",
                                   "use Indian mobile number, e.g. 9628060865")
             return json_out(env, code)
+        if slug == "imei" and "invalid imei" in (err or "").lower():
+            env, code = api_error(key_row, slug, 400, "Invalid IMEI",
+                                  "IMEI must be exactly 15 digits (e.g. 861536030196001)")
+            return json_out(env, code)
+        if slug == "imei" and "not found" in (err or "").lower():
+            env, code = api_error(key_row, slug, 404, "Device not found",
+                                  "TAC (first 8 digits) is not registered in our TAC database — "
+                                  "device may be unlisted, cloned or non-GSMA")
+            return json_out(env, code)
         if slug == "image" and "prompt is too short" in (err or ""):
             env, code = api_error(key_row, slug, 400, "Prompt too short",
                                   "write at least 3 characters of image description")
@@ -1879,7 +1954,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image", "imei") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
