@@ -181,6 +181,14 @@ def init_db():
              "prompt", 14, now_iso()))
     # migration: osint endpoint ka brand name — "OSINT Leak Pro"
     conn.execute("UPDATE endpoints SET name='OSINT Leak Pro' WHERE slug='osint' AND name!='OSINT Leak Pro'")
+    # migration: ff endpoint (user khud banai Free Fire info API — Vercel pe hosted, keyless)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ff'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("ff", "Free Fire Info", "🎮",
+             "https://infoextracted.vercel.app/accinfo?uid={term}",
+             "", "uid", 17, now_iso()))
     # migration: upi endpoint (Airtel paydigi unauth VPA verify — keyless)
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='upi'").fetchone():
         conn.execute(
@@ -1825,8 +1833,9 @@ TYPE_MAP = {
     "ai_image": "image", "text2img": "image", "make_image": "image", "pic": "image",
     "imei": "imei", "imei_info": "imei", "imeilookup": "imei", "imei_lookup": "imei", "device_info": "imei", "tac": "imei",
     "upi": "upi", "upi_info": "upi", "upilookup": "upi", "upi_lookup": "upi", "vpa": "upi", "vpa_info": "upi", "upi_verify": "upi",
+    "ff": "ff", "ff_info": "ff", "freefire": "ff", "ffid": "ff", "ffid_info": "ff", "ff_account": "ff",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak, image, imei, upi"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak, image, imei, upi, ff"
 
 @app.route("/api")
 def api_typed():
@@ -2060,7 +2069,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image", "imei", "upi") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image", "imei", "upi", "ff") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
