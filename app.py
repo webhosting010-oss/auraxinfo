@@ -168,6 +168,15 @@ def init_db():
             conn.execute(
                 "INSERT OR IGNORE INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
                 " VALUES(?,?,?,?,?,?,?,?)", (slug, name, emoji, tpl, ekey, tp, srt, now_iso()))
+    # migration: image endpoint (OpenRouter Image API — Qwen Image 2.1 Turbo default)
+    if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='image'").fetchone():
+        conn.execute(
+            "INSERT INTO endpoints(slug,name,emoji,url_template,upstream_key,term_param,sort_order,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            ("image", "AI Image Generator", "🎨",
+             "https://openrouter.ai/api/v1/images",
+             "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",
+             "prompt", 14, now_iso()))
     # migration: tg endpoint -> {param} placeholder (auto username/userid)
     conn.execute(
         "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
@@ -1366,7 +1375,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat", "domain", "url", "website", "site")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat", "domain", "url", "website", "site", "prompt", "prompt_text")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
@@ -1428,6 +1437,68 @@ def fetch_upstream(ep, term):
     except Exception as e:
         return None, round((time.time() - t0) * 1000, 1), f"upstream error: {e}"
 
+# ------------------------------------------------- AI image generate (OpenRouter)
+DEFAULT_IMAGE_MODEL = "qwen/qwen-image-2.1-turbo"
+IMG_RESOLUTIONS = ("1K", "2K")
+
+def image_generate(prompt, ep):
+    """OpenRouter Image API (POST JSON) — Qwen/Turbo jaise 61+ models. Returns (payload, dt, err)."""
+    model = (request.args.get("model") or "").strip() or DEFAULT_IMAGE_MODEL
+    ratio = (request.args.get("aspect_ratio") or request.args.get("ratio") or "").strip()
+    res = (request.args.get("resolution") or "").strip().upper()
+    if ratio and not re.fullmatch(r"\d{1,2}:\d{1,2}", ratio):
+        ratio = ""
+    if res not in IMG_RESOLUTIONS:
+        res = ""
+    body = {"model": model, "prompt": prompt[:2000], "n": 1}
+    if ratio:
+        body["aspect_ratio"] = ratio
+    if res:
+        body["resolution"] = res
+    req = urllib.request.Request(
+        ep["url_template"] or "https://openrouter.ai/api/v1/images",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": "Bearer " + (ep["upstream_key"] or ""),
+                 "Content-Type": "application/json",
+                 "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
+                 "Accept": "application/json"},
+        method="POST")
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            raw = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            ebody = json.loads(e.read().decode("utf-8", "replace"))
+        except Exception:
+            ebody = {}
+        emsg = ((ebody.get("error") or {}).get("message")) or f"image upstream HTTP {e.code}"
+        return None, round((time.time() - t0) * 1000, 1), emsg
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000, 1), f"image upstream error: {e}"
+    dt = round((time.time() - t0) * 1000, 1)
+    items = []
+    for it in (raw.get("data") or []):
+        if not isinstance(it, dict):
+            continue
+        b64 = it.get("b64_json") or it.get("b64") or ""
+        if b64:
+            fmt = it.get("format") or ("jpg" if it.get("mime", "").endswith("jpeg") else "png")
+            items.append({"format": fmt, "base64": b64,
+                          "data_url": f"data:image/{fmt};base64,{b64}"})
+        elif it.get("url"):
+            items.append({"format": it.get("format") or "png", "url": it["url"]})
+    if not items:
+        return None, dt, "image upstream returned no images"
+    out = {"model": model, "prompt": prompt[:2000], "count": len(items), "images": items}
+    if ratio:
+        out["aspect_ratio"] = ratio
+    if res:
+        out["resolution"] = res
+    if raw.get("usage"):
+        out["usage"] = raw["usage"]
+    return out, dt, None
+
 # ------------------------------------------------------------------ API API
 # type param -> internal slug aliases
 TYPE_MAP = {
@@ -1444,8 +1515,10 @@ TYPE_MAP = {
     "snap": "snap", "snapchat": "snap", "snap_info": "snap", "snapchat_info": "snap", "snapchat_lookup": "snap",
     "domain": "domain", "whois": "domain", "domain_info": "domain", "site_info": "domain", "website_info": "domain", "url_info": "domain",
     "leak": "leak", "leak_info": "leak", "leakinfo": "leak", "leak_search": "leak", "leaksearch": "leak", "db_leak": "leak",
+    "image": "image", "img": "image", "image_gen": "image", "imagegen": "image", "generate_image": "image",
+    "ai_image": "image", "text2img": "image", "make_image": "image", "pic": "image",
 }
-TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak"
+TYPE_LIST = "tg_to_num, mobile, pak_info, osint, ip, aadhr, pincode, ifsc, insta, snap, domain, leak, image"
 
 @app.route("/api")
 def api_typed():
@@ -1554,6 +1627,13 @@ def serve_api(slug):
             payload, dt, err = fetch_upstream(ep, term)
             if isinstance(payload, dict):
                 payload = normalize_leak(payload, term)
+    elif slug == "image":
+        # OpenRouter Image API — POST JSON, model/aspect_ratio/resolution optional params
+        if len(term) < 3:
+            payload, dt, err = None, 0.0, "prompt is too short (min 3 chars)"
+        else:
+            term = term[:2000]
+            payload, dt, err = image_generate(term, ep)
     else:
         payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg" and isinstance(payload, dict) and \
@@ -1601,6 +1681,15 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 400, "Invalid phone number",
                                   "use Indian mobile number, e.g. 9628060865")
             return json_out(env, code)
+        if slug == "image" and "prompt is too short" in (err or ""):
+            env, code = api_error(key_row, slug, 400, "Prompt too short",
+                                  "write at least 3 characters of image description")
+            return json_out(env, code)
+        if slug == "image" and "insufficient credits" in (err or "").lower():
+            env, code = api_error(key_row, slug, 502, "Image upstream out of credits",
+                                  "OpenRouter account has no credits — add credits at "
+                                  "openrouter.ai/settings/credits, this endpoint works instantly with the same key")
+            return json_out(env, code)
         env, code = api_error(key_row, slug, 502, "Upstream failure",
                               err or "unknown upstream error")
         return json_out(env, code)
@@ -1626,7 +1715,7 @@ def serve_api(slug):
             payload = normalize_tg(payload, term)
         if slug == "numpak":
             payload = normalize_pak(payload)
-        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak") and isinstance(payload, dict):
+        if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image") and isinstance(payload, dict):
             # response timing + usage tracking ki jankari (data ke end me, footer se pehle)
             payload["response_time_ms"] = int(round(dt))
             payload["usage_tracked"] = True
