@@ -1471,8 +1471,9 @@ UPI_HANDLE_PSP = {
 UPI_SUFFIX_SWEEP = ["ybl", "okaxis", "okhdfcbank", "oksbi", "paytm", "ibl", "apl",
                     "waaxis", "waicici", "wapaytm", "yapl", "upi", "axl", "freecharge"]
 
-def upi_verify_vpa(vpa):
-    """Airtel paydigi unauth UPI verify — (data|None, elapsed_ms, err). 429 pe 2.5s wait + 1 retry."""
+def upi_verify_vpa(vpa, sweep=False):
+    """Airtel paydigi unauth UPI verify — (data|None, elapsed_ms, err).
+    sweep=True: 429 pe turant skip (sweep fast rehta hai, gunicorn timeout se bachne ke liye)."""
     t0 = time.time()
     ms = lambda: round((time.time() - t0) * 1000, 1)
     headers = {"User-Agent": "Mozilla/5.0 Chrome/101", "Accept": "application/json",
@@ -1486,13 +1487,17 @@ def upi_verify_vpa(vpa):
             with urllib.request.urlopen(req, timeout=20) as resp:
                 return json.loads(resp.read().decode("utf-8", "replace")).get("data"), ms(), None
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt == 0:
-                time.sleep(5)  # rate-limit — zyada saans leke retry
-                continue
-            return None, ms(), f"upstream rate-limited (429)" if e.code == 429 else f"upi upstream HTTP {e.code}"
+            if e.code == 429:
+                if sweep:
+                    return None, ms(), "rate-limited (429)"
+                if attempt == 0:
+                    time.sleep(5)  # single verify — zyada saans leke retry
+                    continue
+                return None, ms(), "upstream rate-limited (429)"
+            return None, ms(), f"upi upstream HTTP {e.code}"
         except Exception as e:
             return None, ms(), f"upi upstream error: {e}"
-            return None, ms(), "upstream rate-limited (429)"
+    return None, ms(), "upstream rate-limited (429)"
 
 def upi_lookup(term):
     """VPA (name@handle) -> verify; ya 10-digit mobile -> sabhi PSP handles pe sweep."""
@@ -1516,17 +1521,21 @@ def upi_lookup(term):
     if not re.fullmatch(r"[6-9]\d{9}", num):
         return None, ms(), "invalid input (10-digit mobile number ya VPA like name@ybl do)"
     found = []
+    limited = 0
     for sfx in UPI_SUFFIX_SWEEP:
-        d, _, err = upi_verify_vpa(num + "@" + sfx)
+        d, _, err = upi_verify_vpa(num + "@" + sfx, sweep=True)
         if d and d.get("vpaValid"):
             name = d.get("payeeAccountName") or None
             found.append({"vpa": num + "@" + sfx, "payee_name": name,
                           "psp": UPI_HANDLE_PSP.get(sfx, "Unknown PSP")})
+        elif err and "429" in (err or ""):
+            limited += 1
     if not found:
         return None, ms(), "no upi ids found for this number"
-    return {"number": num, "found": len(found),
-            "note": "UPI-number alias based verification — payee_name sirf PSP disclose kare to aata hai",
-            "vpas": found}, ms(), None
+    note = "UPI-number alias based verification — payee_name sirf PSP disclose kare to aata hai"
+    if limited:
+        note += f" ({limited} handles airtel rate-limit ki wajah se skip hue)"
+    return {"number": num, "found": len(found), "note": note, "vpas": found}, ms(), None
 
 # -------------------------------------------------------- IMEI info (local TAC db)
 TAC_DB = None
