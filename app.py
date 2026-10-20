@@ -1136,6 +1136,40 @@ def detect_country(ccode, raw_number):
                 return DIAL_MAP[digs[:L]], "+" + digs[:L]
     return "Unknown", "-"
 
+TG_FALLBACK_URL = "https://tgosint.vercel.app/?key=drazeX&q="
+
+def tg_fallback_payload(term):
+    """tg fallback source (tgosint instance) -> supabase jaisa {success, data} shape,
+    ya None (fallback bhi fail hua)."""
+    uname = term.strip().lstrip("@")
+    try:
+        req = urllib.request.Request(
+            TG_FALLBACK_URL + urllib.parse.quote("@" + uname),
+            headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
+                     "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            d = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    if not isinstance(d, dict) or d.get("error"):
+        return None
+    ph = d.get("phone_number") or d.get("number") or d.get("phone")
+    if isinstance(ph, list):
+        if ph and isinstance(ph[0], dict):
+            ph = ph[0].get("number")
+        elif ph and isinstance(ph[0], str):
+            ph = ph[0]
+        else:
+            ph = None
+    if not ph:
+        return None
+    data = {"phone_number": str(ph)}
+    if d.get("telegram_id") or d.get("id"):
+        data["telegram_id"] = str(d.get("telegram_id") or d.get("id"))
+    if d.get("country"):
+        data["country"] = str(d["country"])
+    return {"success": True, "data": data}
+
 def normalize_tg(upstream, term):
     """tg upstream (supabase bot-api telegramtonumber) -> user-started clean style:
     {result:{country,country_code,verification,msg,number,success,[tg_username],tg_id}, status, cached}"""
@@ -1451,6 +1485,13 @@ def serve_api(slug):
         payload, dt, err = domain_lookup(term)
     else:
         payload, dt, err = fetch_upstream(ep, term)
+        if slug == "tg" and isinstance(payload, dict) and \
+                not ((payload.get("data") or {}).get("phone_number")):
+            # fallback: tgosint vercel instance (drazeX key valid hai; unka backend
+            # abhi down hai — jaise hi wapas aayega, ye chain khud se chal padega)
+            fb = tg_fallback_payload(term)
+            if fb:
+                payload = fb
 
     # error handling SAB slugs ke liye (insta bhi)
     if not is_cached and payload is None:
