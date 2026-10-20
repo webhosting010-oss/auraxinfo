@@ -11,6 +11,7 @@ import sqlite3
 import secrets
 import urllib.request
 import urllib.parse
+import base64
 from functools import wraps
 from datetime import datetime, timedelta
 
@@ -1441,6 +1442,46 @@ def fetch_upstream(ep, term):
 DEFAULT_IMAGE_MODEL = "qwen/qwen-image-2.1-turbo"
 IMG_RESOLUTIONS = ("1K", "2K")
 
+# HuggingFace fallback — OpenRouter pe credits/permission fail ho to FLUX.2-klein se
+HF_IMAGE_URL = "https://router.huggingface.co/hf-inference/models/"
+HF_IMAGE_TOKEN = "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"
+HF_IMAGE_MODEL = "black-forest-labs/FLUX.2-klein-4B"
+
+def hf_image_fallback(prompt):
+    """OpenRouter fail hone pe HuggingFace Inference Providers (FLUX.2-klein) se banwalen.
+    Returns (payload|None, elapsed_ms, err)."""
+    t0 = time.time()
+    req = urllib.request.Request(
+        HF_IMAGE_URL + HF_IMAGE_MODEL,
+        data=json.dumps({"inputs": prompt[:2000]}).encode("utf-8"),
+        headers={"Authorization": "Bearer " + HF_IMAGE_TOKEN,
+                 "Content-Type": "application/json",
+                 "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        try:
+            ebody = json.loads(e.read().decode("utf-8", "replace"))
+            emsg = ebody.get("error") or ""
+        except Exception:
+            emsg = ""
+        return None, round((time.time() - t0) * 1000, 1), \
+            emsg or f"hf fallback HTTP {e.code}"
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000, 1), f"hf fallback error: {e}"
+    if not raw or raw[:4] not in (b"\x89PNG", b"\xff\xd8") and not raw[:5] == b"GIF89":
+        return None, round((time.time() - t0) * 1000, 1), "hf fallback returned no image bytes"
+    fmt = "png" if raw[:4] == b"\x89PNG" else ("gif" if raw[:5] == b"GIF89" else "jpg")
+    b64 = base64.b64encode(raw).decode("ascii")
+    out = {"model": HF_IMAGE_MODEL + " (HuggingFace)", "prompt": prompt[:2000],
+           "count": 1,
+           "images": [{"format": fmt, "base64": b64,
+                       "data_url": f"data:image/{fmt};base64,{b64}"}],
+           "fallback": "primary upstream fail — HuggingFace FLUX.2-klein se generate hua"}
+    return out, round((time.time() - t0) * 1000, 1), None
+
 def image_generate(prompt, ep):
     """OpenRouter Image API (POST JSON) — Qwen/Turbo jaise 61+ models. Returns (payload, dt, err)."""
     model = (request.args.get("model") or "").strip() or DEFAULT_IMAGE_MODEL
@@ -1473,9 +1514,18 @@ def image_generate(prompt, ep):
         except Exception:
             ebody = {}
         emsg = ((ebody.get("error") or {}).get("message")) or f"image upstream HTTP {e.code}"
+        fb, fbd, ferr = hf_image_fallback(prompt)  # credits/permission fail -> HF FLUX
+        if fb:
+            return fb, round(round((time.time() - t0) * 1000, 1) + fbd, 1), None
+        if ferr:
+            emsg = emsg + "; " + ferr
         return None, round((time.time() - t0) * 1000, 1), emsg
     except Exception as e:
-        return None, round((time.time() - t0) * 1000, 1), f"image upstream error: {e}"
+        fb, fbd, ferr = hf_image_fallback(prompt)
+        if fb:
+            return fb, round(round((time.time() - t0) * 1000, 1) + fbd, 1), None
+        return None, round((time.time() - t0) * 1000, 1), \
+            (f"image upstream error: {e}" + (f"; {ferr}" if ferr else ""))
     dt = round((time.time() - t0) * 1000, 1)
     items = []
     for it in (raw.get("data") or []):
@@ -1684,6 +1734,15 @@ def serve_api(slug):
         if slug == "image" and "prompt is too short" in (err or ""):
             env, code = api_error(key_row, slug, 400, "Prompt too short",
                                   "write at least 3 characters of image description")
+            return json_out(env, code)
+        if slug == "image" and "no images" in (err or "").lower():
+            env, code = api_error(key_row, slug, 502, "Image generation failed",
+                                  "upstream could not generate an image for this prompt")
+            return json_out(env, code)
+        if slug == "image" and "permissions" in (err or "").lower():
+            env, code = api_error(key_row, slug, 502, "Image upstream permissions missing",
+                                  "OpenRouter has no credits AND HuggingFace token lacks 'Inference "
+                                  "Providers' permission — fix either side, this endpoint is ready")
             return json_out(env, code)
         if slug == "image" and "insufficient credits" in (err or "").lower():
             env, code = api_error(key_row, slug, 502, "Image upstream out of credits",
