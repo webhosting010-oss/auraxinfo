@@ -1611,8 +1611,6 @@ IMG_RATIO_DIMS = {"1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
                   "4:3": (1152, 896), "3:4": (896, 1152), "3:2": (1216, 832), "2:3": (832, 1216)}
 
 FLUX_SPACES = [
-    # (host, fn, kind, model_label) — kind: "klein"(10-param) / "schnell"(6-param)
-    # NOTE: Pollinations leg REMOVED (user demand — watermark branding pasand nahi)
     ("https://black-forest-labs-flux-2-klein-4b.hf.space", "infer", "klein",
      "black-forest-labs/FLUX.2-klein-4B"),
     ("https://black-forest-labs-flux-1-schnell.hf.space", "infer", "schnell",
@@ -1620,6 +1618,13 @@ FLUX_SPACES = [
     ("https://black-forest-labs-flux-2-klein-9b.hf.space", "generate", "klein",
      "black-forest-labs/FLUX.2-klein-9B"),
 ]
+
+# NVIDIA NIM — user-key leg (flux-3-image-klein, ~1.8s JSON me b64 JPG deta hai)
+NV_IMAGE_KEY = "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"
+NV_IMAGE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein"
+# NVIDIA ke allowed ratios — dono 16:9 / 9:16 wale closest pe map
+NV_RATIO_MAP = {"16:9": "13:7", "9:16": "7:13", "1:1": "1:1", "4:3": "4:3",
+                "3:4": "3:4", "3:2": "3:2", "2:3": "2:3", "21:9": "21:9"}
 
 def _flux_space_call(host, fn, kind, prompt, w, h):
     """HF Space gradio API se ek image — (out_url, seed, elapsed_ms, err|None).
@@ -1697,6 +1702,54 @@ def _flux_space_call_auth(host, fn, kind, prompt, w, h, auth):
                     gerr = "flux-space: " + item[:120]
     return out_url, seed, ms(), gerr
 
+def nv_image_fallback(prompt, ratio):
+    """NVIDIA NIM flux-3-image-klein — ~1.8s me b64 JPG. Returns (payload|None, elapsed_ms, err|None)."""
+    t0 = time.time()
+    ms = lambda: round((time.time() - t0) * 1000, 1)
+    body = {"prompt": prompt[:2000], "cfg_scale": 4.0, "steps": 4,
+            "seed": int(time.time()) % 2147483647}
+    ar = NV_RATIO_MAP.get(ratio)
+    if ar:
+        body["aspect_ratio"] = ar
+    req = urllib.request.Request(
+        NV_IMAGE_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": "Bearer " + NV_IMAGE_KEY,
+                 "Accept": "application/json",
+                 "Content-Type": "application/json",
+                 "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            raw = json.loads(resp.read().decode("utf-8", "replace"))
+        arts = raw.get("artifacts") or []
+        b64 = ""
+        if arts and isinstance(arts[0], dict):
+            b64 = str(arts[0].get("base64") or arts[0].get("b64") or "")
+        if not b64:
+            return None, ms(), "nvidia: no artifact in response"
+        sig = base64.b64decode((b64 + "==")[:len(b64) + 3])[:4]
+        fmt = ("png" if sig[:4] == b"\x89PNG" else
+               "jpg" if sig[:2] == b"\xff\xd8" else
+               "webp" if sig[:4] == b"RIFF" else "jpg")
+        out = {"model": "flux-3-image-klein (NVIDIA NIM)", "prompt": prompt[:2000],
+               "count": 1,
+               "images": [{"format": fmt, "base64": b64,
+                           "data_url": f"data:image/{fmt};base64,{b64}"}],
+               "fallback": "primary upstream fail — NVIDIA flux-3-image-klein se generate hua"}
+        nseed = (arts[0] or {}).get("seed")
+        if nseed is not None:
+            out["seed"] = nseed
+        return out, ms(), None
+    except urllib.error.HTTPError as e:
+        try:
+            ebody = e.read().decode("utf-8", "replace")[:150]
+        except Exception:
+            ebody = ""
+        return None, ms(), f"nvidia HTTP {e.code}: {ebody}"
+    except Exception as e:
+        return None, ms(), f"nvidia error: {e}"
+
 def hf_image_fallback(prompt):
     """OpenRouter fail hone pe free HF Spaces se generate — 3-space chain.
     (FLUX.2-klein-4B -> FLUX.1-schnell -> FLUX.2-klein-9B). Returns (payload|None, elapsed_ms, err)."""
@@ -1770,18 +1823,25 @@ def image_generate(prompt, ep):
         except Exception:
             ebody = {}
         emsg = ((ebody.get("error") or {}).get("message")) or f"image upstream HTTP {e.code}"
-        fb, fbd, ferr = hf_image_fallback(prompt)  # credits/permission fail -> HF FLUX
+        fb, fbn, fnerr = nv_image_fallback(prompt, ratio)  # credits fail -> NVIDIA NIM (1.8s)
+        if fb:
+            return fb, round(round((time.time() - t0) * 1000, 1) + fbn, 1), None
+        fb, fbd, ferr = hf_image_fallback(prompt)  # NVIDIA bhi fail -> HF FLUX
         if fb:
             return fb, round(round((time.time() - t0) * 1000, 1) + fbd, 1), None
-        if ferr:
-            emsg = emsg + "; " + ferr
+        if ferr or fnerr:
+            emsg = emsg + (f"; {fnerr}" if fnerr else "") + (f"; {ferr}" if ferr else "")
         return None, round((time.time() - t0) * 1000, 1), emsg
     except Exception as e:
+        fb, fbn, fnerr = nv_image_fallback(prompt, ratio)
+        if fb:
+            return fb, round(round((time.time() - t0) * 1000, 1) + fbn, 1), None
         fb, fbd, ferr = hf_image_fallback(prompt)
         if fb:
             return fb, round(round((time.time() - t0) * 1000, 1) + fbd, 1), None
         return None, round((time.time() - t0) * 1000, 1), \
-            (f"image upstream error: {e}" + (f"; {ferr}" if ferr else ""))
+            (f"image upstream error: {e}" + (f"; {fnerr}" if fnerr else "")
+             + (f"; {ferr}" if ferr else ""))
     dt = round((time.time() - t0) * 1000, 1)
     items = []
     for it in (raw.get("data") or []):
