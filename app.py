@@ -1402,7 +1402,7 @@ def split_output(env):
     return Response(body, status=200 if not isinstance(env.get("status_code"), int) else env.get("status_code", 200),
                     mimetype="application/json")
 
-TERMS = ("term", "search", "query", "username", "userid", "user_id", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat", "domain", "url", "website", "site", "prompt", "prompt_text")
+TERMS = ("term", "search", "query", "username", "userid", "user_id", "uid", "number", "q", "value", "id", "ip", "aadhar", "aadhaar", "pincode", "pin", "ifsc", "insta", "instagram", "snapchat", "domain", "url", "website", "site", "prompt", "prompt_text")
 def first_term():
     for t in TERMS:
         v = request.args.get(t, "").strip()
