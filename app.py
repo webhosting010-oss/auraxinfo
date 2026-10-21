@@ -2004,6 +2004,10 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 400, "Invalid phone number",
                                   "use Indian mobile number, e.g. 9628060865")
             return json_out(env, code)
+        if slug == "ff" and "http 404" in (err or "").lower():
+            env, code = api_error(key_row, slug, 404, "Free Fire account not found",
+                                  "no Free Fire account exists for this UID: " + term)
+            return json_out(env, code)
         if slug == "upi" and "rate-limited" in (err or "").lower():
             env, code = api_error(key_row, slug, 429, "UPI upstream busy",
                                   "Airtel UPI gateway rate-limited ho gaya — koi seconds me retry karo")
