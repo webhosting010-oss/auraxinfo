@@ -1612,30 +1612,43 @@ IMG_RATIO_DIMS = {"1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
 
 FLUX_SPACES = [
     # (host, fn, kind, model_label) — kind: "klein"(10-param) / "schnell"(6-param)
+    # NOTE: Pollinations leg REMOVED (user demand — watermark branding pasand nahi)
     ("https://black-forest-labs-flux-2-klein-4b.hf.space", "infer", "klein",
      "black-forest-labs/FLUX.2-klein-4B"),
     ("https://black-forest-labs-flux-1-schnell.hf.space", "infer", "schnell",
      "black-forest-labs/FLUX.1-schnell"),
     ("https://black-forest-labs-flux-2-klein-9b.hf.space", "generate", "klein",
      "black-forest-labs/FLUX.2-klein-9B"),
-    ("https://image.pollinations.ai", "prompt", "pollinations",
-     "Pollinations (Flux)"),
 ]
 
 def _flux_space_call(host, fn, kind, prompt, w, h):
-    """HF Space gradio API se ek image — (out_url, seed, elapsed_ms, err|None)."""
+    """HF Space gradio API se ek image — (out_url, seed, elapsed_ms, err|None).
+    Pehle user-token se (ZeroGPU quota), token quota exhaust ('event: error') ho
+    jaaye to automatic anonymous (bina token) retry — token band ho to bhi image aaye."""
+    t0 = time.time()
+    aerr = None
+    for auth in (FLUX_SPACE_TOKEN, None):
+        out_url, seed, aerr = _flux_space_call_auth(host, fn, kind, prompt, w, h, auth)
+        if out_url:
+            return out_url, seed, round((time.time() - t0) * 1000, 1), None
+    return None, None, round((time.time() - t0) * 1000, 1), aerr
+
+def _flux_space_call_auth(host, fn, kind, prompt, w, h, auth):
+    """Ek auth mode (token ya anonymous) se generation — (out_url, seed, elapsed_ms, err|None)."""
     t0 = time.time()
     ms = lambda: round((time.time() - t0) * 1000, 1)
     if kind == "schnell":
         data = [prompt[:2000], 0, True, w, h, 4]
     else:
         data = [prompt[:2000], [], "Distilled (4 steps)", 0, True, w, h, 4, 1.0, False]
+    hdrs = {"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
+            "Content-Type": "application/json"}
+    if auth:
+        hdrs["Authorization"] = "Bearer " + auth
     req = urllib.request.Request(
         host + "/gradio_api/call/" + fn,
         data=json.dumps({"data": data}).encode("utf-8"),
-        headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
-                 "Content-Type": "application/json",
-                 "Authorization": "Bearer " + FLUX_SPACE_TOKEN},
+        headers=hdrs,
         method="POST")
     try:
         ev = json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace"))
@@ -1652,7 +1665,8 @@ def _flux_space_call(host, fn, kind, prompt, w, h):
             r = urllib.request.urlopen(urllib.request.Request(
                 host + "/gradio_api/call/" + fn + "/" + eid,
                 headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
-                         "Authorization": "Bearer " + FLUX_SPACE_TOKEN}), timeout=15)
+                         **({"Authorization": "Bearer " + auth} if auth else {})}),
+                timeout=15)
             body = r.read().decode("utf-8", "replace")
             if body:
                 break
@@ -1699,29 +1713,6 @@ def hf_image_fallback(prompt):
     h = min(max(h, 256), 2048)
     last_err = None
     for host, fn, kind, label in FLUX_SPACES:
-        if kind == "pollinations":
-            # pollinations free tier — direct image URL, 1 image/45s per IP limit
-            try:
-                t2 = time.time()
-                pu = (host + "/prompt/" + urllib.parse.quote(prompt[:800])
-                      + f"?width={w}&height={h}&nologo=true")
-                with urllib.request.urlopen(urllib.request.Request(
-                        pu, headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"}), timeout=120) as resp:
-                    img = resp.read()
-                    ct = (resp.headers.get("Content-Type") or "").lower()
-                if (img[:4] == b"\x89PNG" or img[:2] == b"\xff\xd8" or img[:4] == b"RIFF") and "image" in ct:
-                    fmt = "png" if img[:4] == b"\x89PNG" else ("jpg" if img[:2] == b"\xff\xd8" else "webp")
-                    b64 = base64.b64encode(img).decode("ascii")
-                    out = {"model": label, "prompt": prompt[:2000], "count": 1,
-                           "images": [{"format": fmt, "url": pu, "base64": b64,
-                                       "data_url": f"data:image/{fmt};base64,{b64}"}],
-                           "width": w, "height": h,
-                           "fallback": "primary upstream fail — Pollinations (free) se generate hua"}
-                    return out, round((time.time() - t0) * 1000, 1), None
-                last_err = "pollinations: no image (rate-limited, try again in 45s)"
-            except Exception as e:
-                last_err = f"pollinations error: {e}"
-            continue
         out_url, seed, sdt, serr = _flux_space_call(host, fn, kind, prompt, w, h)
         if out_url:
             fmt, b64 = "webp", None
