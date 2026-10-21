@@ -1720,6 +1720,55 @@ def _flux_space_call_auth(host, fn, kind, prompt, w, h, auth):
                     gerr = "flux-space: " + item[:120]
     return out_url, seed, ms(), gerr
 
+def gemini_image_fallback(prompt, ratio):
+    """Gemini free-key image leg — nano-banana/3.1 models generateContent se b64 image.
+    (NVIDIA fail ho tabhi aayega; quota reset/nyi key pe auto chalega)
+    Returns (payload|None, elapsed_ms, err|None)."""
+    t0 = time.time()
+    ms = lambda: round((time.time() - t0) * 1000, 1)
+    body = json.dumps({"contents": [{"parts": [{"text": prompt[:2000]}]}],
+                       "generationConfig": {"responseModalities": ["IMAGE"]}}).encode("utf-8")
+    last = None
+    for model in GEMINI_IMAGE_MODELS:
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               + model + ":generateContent")
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json",
+                     "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                d = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            try:
+                e.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            last = f"gemini {model} HTTP {e.code}"  # 429 quota / 404 -> agla model
+            continue
+        except Exception as e:
+            last = f"gemini {model} error: {e}"
+            continue
+        cand = (d.get("candidates") or [{}])[0]
+        for p in (((cand.get("content") or {}).get("parts")) or []):
+            idta = p.get("inlineData") or {}
+            if idta.get("data"):
+                mime = (idta.get("mimeType") or "image/png").split("/")[-1]
+                b64 = idta["data"]
+                out = {"model": f"{model} (Gemini)", "prompt": prompt[:2000], "count": 1,
+                       "images": [{"format": mime, "base64": b64,
+                                   "data_url": f"data:image/{mime};base64,{b64}"}],
+                       "fallback": f"primary upstream fail — Gemini {model} se generate hua"}
+                return out, ms(), None
+        last = f"gemini {model}: no image in response"
+    return None, ms(), last
+
+# Gemini free-key leg — nano-banana/3.1 image models (429 quota pe agla model try hota hai)
+GEMINI_KEY = "AQ.Ab8RN6KPb64HNj9BfPouBcgNzOgBX3IUGHffe6fFyjcIsKjlww"
+GEMINI_IMAGE_MODELS = ("gemini-3.1-flash-lite-image", "gemini-3.1-flash-image",
+                       "gemini-2.5-flash-image")
+
 def nv_image_fallback(prompt, ratio):
     """NVIDIA NIM flux-3-image-klein — ~1.8s me b64 JPG. Returns (payload|None, elapsed_ms, err|None)."""
     t0 = time.time()
@@ -2026,8 +2075,12 @@ def serve_api(slug):
             if fb:
                 payload, dt, err = fb, round((time.time() - t_all) * 1000, 1), None
             else:
-                payload2, dt2, err2 = image_generate(term, ep)  # OpenRouter -> HF fallback chain
-                payload, dt, err = payload2, round((time.time() - t_all) * 1000, 1), err2
+                fg, fgd, gerr = gemini_image_fallback(term, ratio)  # Gemini leg (free key)
+                if fg:
+                    payload, dt, err = fg, round((time.time() - t_all) * 1000, 1), None
+                else:
+                    payload2, dt2, err2 = image_generate(term, ep)  # OpenRouter -> HF fallback chain
+                    payload, dt, err = payload2, round((time.time() - t_all) * 1000, 1), err2
     else:
         payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg":
