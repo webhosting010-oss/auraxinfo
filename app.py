@@ -1823,25 +1823,18 @@ def image_generate(prompt, ep):
         except Exception:
             ebody = {}
         emsg = ((ebody.get("error") or {}).get("message")) or f"image upstream HTTP {e.code}"
-        fb, fbn, fnerr = nv_image_fallback(prompt, ratio)  # credits fail -> NVIDIA NIM (1.8s)
-        if fb:
-            return fb, round(round((time.time() - t0) * 1000, 1) + fbn, 1), None
-        fb, fbd, ferr = hf_image_fallback(prompt)  # NVIDIA bhi fail -> HF FLUX
+        fb, fbd, ferr = hf_image_fallback(prompt)  # OpenRouter fail -> HF FLUX chain (NVIDIA pehle hi try ho chuka hai)
         if fb:
             return fb, round(round((time.time() - t0) * 1000, 1) + fbd, 1), None
-        if ferr or fnerr:
-            emsg = emsg + (f"; {fnerr}" if fnerr else "") + (f"; {ferr}" if ferr else "")
+        if ferr:
+            emsg = emsg + "; " + ferr
         return None, round((time.time() - t0) * 1000, 1), emsg
     except Exception as e:
-        fb, fbn, fnerr = nv_image_fallback(prompt, ratio)
-        if fb:
-            return fb, round(round((time.time() - t0) * 1000, 1) + fbn, 1), None
         fb, fbd, ferr = hf_image_fallback(prompt)
         if fb:
             return fb, round(round((time.time() - t0) * 1000, 1) + fbd, 1), None
         return None, round((time.time() - t0) * 1000, 1), \
-            (f"image upstream error: {e}" + (f"; {fnerr}" if fnerr else "")
-             + (f"; {ferr}" if ferr else ""))
+            (f"image upstream error: {e}" + (f"; {ferr}" if ferr else ""))
     dt = round((time.time() - t0) * 1000, 1)
     items = []
     for it in (raw.get("data") or []):
@@ -2003,12 +1996,20 @@ def serve_api(slug):
         # local TAC database (11.8MB CSV) — Luhn + brand/model, zero upstream, kabhi down nahi
         payload, dt, err = imei_lookup(term)
     elif slug == "image":
-        # OpenRouter Image API — POST JSON, model/aspect_ratio/resolution optional params
+        # Image generation — user ki NVIDIA key (flux-3-image-klein) PRIMARY,
+        # OpenRouter backup, HF Space chain sabse akhir (Pollinations REMOVED)
         if len(term) < 3:
             payload, dt, err = None, 0.0, "prompt is too short (min 3 chars)"
         else:
             term = term[:2000]
-            payload, dt, err = image_generate(term, ep)
+            ratio = (request.args.get("aspect_ratio") or request.args.get("ratio") or "").strip()
+            t_all = time.time()
+            fb, fbd, ferr = nv_image_fallback(term, ratio)   # NVIDIA NIM pehla — ~2s
+            if fb:
+                payload, dt, err = fb, round((time.time() - t_all) * 1000, 1), None
+            else:
+                payload2, dt2, err2 = image_generate(term, ep)  # OpenRouter -> HF fallback chain
+                payload, dt, err = payload2, round((time.time() - t_all) * 1000, 1), err2
     else:
         payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg" and isinstance(payload, dict) and \
