@@ -1628,7 +1628,7 @@ def _flux_space_call(host, fn, kind, prompt, w, h):
     t0 = time.time()
     aerr = None
     for auth in (FLUX_SPACE_TOKEN, None):
-        out_url, seed, aerr = _flux_space_call_auth(host, fn, kind, prompt, w, h, auth)
+        out_url, seed, _sdt, aerr = _flux_space_call_auth(host, fn, kind, prompt, w, h, auth)
         if out_url:
             return out_url, seed, round((time.time() - t0) * 1000, 1), None
     return None, None, round((time.time() - t0) * 1000, 1), aerr
