@@ -214,6 +214,7 @@ def init_db():
         "upstream_key='CODERPETRO', term_param='term', enabled=1 "
         "WHERE slug='tg' AND (upstream_key='6051223b2f1c424bbf9257b371506d52' OR url_template LIKE '%tele-to-phone%' OR enabled=0)")
     # tg naye normalize style ke baad purane cached payload outdated (91 prefix / verification)
+    # + 'Failed to fetch' fail-results poison cache ka safai (ab failures cache nahi hote)
     conn.execute("DELETE FROM cache WHERE slug='tg'")
     # migration: ip endpoint (ip-api.com) — purane DB me bhi add ho jaye
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ip'").fetchone():
@@ -1961,6 +1962,17 @@ def serve_api(slug):
         payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg" and isinstance(payload, dict) and \
                 not ((payload.get("data") or {}).get("phone_number")):
+            raw_txt = (payload.get("raw") or "").lower()
+            if "failed to fetch" in raw_txt:
+                # "Failed to fetch external data" = upstream ka random glitch — 2 aur chances
+                for _ in range(2):
+                    r2, d2, _e2 = fetch_upstream(ep, term)
+                    dt = round(dt + (d2 or 0), 1)
+                    if r2 and isinstance(r2, dict) and (r2.get("data") or {}).get("phone_number"):
+                        payload = r2
+                        break
+        if slug == "tg" and isinstance(payload, dict) and \
+                not ((payload.get("data") or {}).get("phone_number")):
             # fallback: tgosint vercel instance (drazeX key valid hai; unka backend
             # abhi down hai — jaise hi wapas aayega, ye chain khud se chal padega)
             fb = tg_fallback_payload(term)
@@ -2094,7 +2106,9 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 404, "IP not found",
                                   (payload.get("message") or "upstream could not resolve this IP"))
             return json_out(env, code)
-        if ttl > 0 and isinstance(payload, dict) and payload:
+        if ttl > 0 and isinstance(payload, dict) and payload and \
+                not (slug == "tg" and payload.get("success") is False):
+            # tg failures cache ME DAB na karo (poore TTL tak 'no data' dikhta tha — bug fix)
             cache_put(slug, term, payload)
             memcache_put(ck, payload)
     if slug == "ip" and isinstance(payload, dict):
