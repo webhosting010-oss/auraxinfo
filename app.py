@@ -1624,7 +1624,7 @@ IMG_RESOLUTIONS = ("1K", "2K")
 
 # FLUX.2-klein fallback — OpenRouter pe credits/permission fail ho to free official Spaces
 # (token attach karte hi ZeroGPU quota apne account se chalta hai — anonymous quota jaldi khatam hota hai)
-FLUX_SPACE_TOKEN = "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"
+FLUX_SPACE_TOKEN = os.environ.get("FLUX_SPACE_TOKEN", "")  # set via Space secret (repo me key NAHI)
 IMG_RATIO_DIMS = {"1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
                   "4:3": (1152, 896), "3:4": (896, 1152), "3:2": (1216, 832), "2:3": (832, 1216)}
 
@@ -1638,7 +1638,7 @@ FLUX_SPACES = [
 ]
 
 # NVIDIA NIM — user-key leg (flux-3-image-klein, ~1.8s JSON me b64 JPG deta hai)
-NV_IMAGE_KEY = "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"
+NV_IMAGE_KEY = os.environ.get("NV_IMAGE_KEY", "")  # set via Space secret (repo me key NAHI)
 NV_IMAGE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein"
 # NVIDIA ke allowed ratios — dono 16:9 / 9:16 wale closest pe map
 NV_RATIO_MAP = {"16:9": "13:7", "9:16": "7:13", "1:1": "1:1", "4:3": "4:3",
@@ -1765,7 +1765,7 @@ def gemini_image_fallback(prompt, ratio):
     return None, ms(), last
 
 # Gemini free-key leg — nano-banana/3.1 image models (429 quota pe agla model try hota hai)
-GEMINI_KEY = "AQ.Ab8RN6KPb64HNj9BfPouBcgNzOgBX3IUGHffe6fFyjcIsKjlww"
+GEMINI_KEY = os.environ.get("GEMINI_KEY", "")  # set via Space secret (repo me key NAHI)
 GEMINI_IMAGE_MODELS = ("gemini-3.1-flash-lite-image", "gemini-3.1-flash-image",
                        "gemini-2.5-flash-image")
 
