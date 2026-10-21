@@ -2166,8 +2166,9 @@ def serve_api(slug):
                                   (payload.get("message") or "upstream could not resolve this IP"))
             return json_out(env, code)
         if ttl > 0 and isinstance(payload, dict) and payload and \
-                not (slug == "tg" and payload.get("success") is False):
-            # tg failures cache ME DAB na karo (poore TTL tak 'no data' dikhta tha — bug fix)
+                not (slug == "tg" and payload.get("status") is False):
+            # tg failures cache ME DAB na karo (normalize ke baad 'status' False hota hai
+            # — pehle 'success' pe check kar raha the isliye fail code bhi 12h cache ho rahe the)
             cache_put(slug, term, payload)
             memcache_put(ck, payload)
     if slug == "ip" and isinstance(payload, dict):
