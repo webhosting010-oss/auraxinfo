@@ -1185,6 +1185,43 @@ def detect_country(ccode, raw_number):
 
 TG_FALLBACK_URL = "https://tgosint.vercel.app/?key=drazeX&q="
 
+SAHIL_TG_URL = "https://sahilxher.madewith.me/api/tg"
+SAHIL_TG_KEY = "AURA"
+
+def sahil_tg_fetch(term):
+    """Sahil-API leg (user-diya fast source ~3s) — tg-id ya username se phone.
+    200 + number mila -> CODERPETRO-jaisa raw shape {success, data} (normalize_tg same handle kare).
+    Miss/fail -> (None, ms, err) — serve flow CODERPETRO deep-retry pe gir jayega.
+    Indian 10-digit (6-9 start) pe +91 auto-enrich — upstream unka country 'Unknown' bhejta hai."""
+    t0 = time.time()
+    s = term.strip().lstrip("@")
+    q = ("number=" if s.isdigit() else "term=") + urllib.parse.quote(s)
+    try:
+        req = urllib.request.Request(
+            SAHIL_TG_URL + "?key=" + SAHIL_TG_KEY + "&" + q,
+            headers={"User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)",
+                     "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            d = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None, round((time.time() - t0) * 1000, 1), None
+    ms = round((time.time() - t0) * 1000, 1)
+    if not isinstance(d, dict):
+        return None, ms, None
+    num = str(d.get("number") or "").strip()
+    if not num:
+        return None, ms, None
+    cc = str(d.get("country_code") or "").strip()
+    full = num
+    if cc and not num.startswith("+"):
+        full = cc + num
+    elif not cc and re.fullmatch(r"[6-9]\d{9,11}", num):
+        full = "+91" + num
+    data = {"phone_number": full,
+            "telegram_id": str(d.get("tg_id") or ""),
+            "country": str(d.get("country") or "")}
+    return {"success": True, "data": data}, ms, None
+
 def tg_fallback_payload(term):
     """tg fallback source (tgosint instance) -> supabase jaisa {success, data} shape,
     ya None (fallback bhi fail hua)."""
@@ -2082,7 +2119,15 @@ def serve_api(slug):
                     payload2, dt2, err2 = image_generate(term, ep)  # OpenRouter -> HF fallback chain
                     payload, dt, err = payload2, round((time.time() - t_all) * 1000, 1), err2
     else:
-        payload, dt, err = fetch_upstream(ep, term)
+        payload, dt, err = None, 0.0, None
+        if slug == "tg":
+            # Sahil-API leg (user-diya, ~3s fast) — pehle YAHAN try; miss/fail pe niche
+            # CODERPETRO deep-retry sambhalega. Dono ka data same pool hai.
+            sp, spd, serr = sahil_tg_fetch(term)
+            if sp:
+                payload, dt, err = sp, spd, None
+        if payload is None:
+            payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg":
             def _tg_ok(p):
                 return isinstance(p, dict) and \
