@@ -1979,7 +1979,15 @@ def serve_api(slug):
             if fb:
                 payload = fb
         if slug == "tg" and payload is None:
-            # upstream flaky/timeout ho to bhi clean "Details not found" style do (502 ke bajaye)
+            # upstream poora timeout/network-fail ho gaya — glitch-retry jaisa hi 2 aur chances
+            for _ in range(2):
+                r2, d2, _e2 = fetch_upstream(ep, term)
+                dt = round(dt + (d2 or 0), 1)
+                if r2:
+                    payload = r2
+                    break
+        if slug == "tg" and payload is None:
+            # tab bhi fail — clean "Details not found" style do (502 ke bajaye)
             payload, err = {"success": False, "data": {}}, None
         if slug in ("num", "osint") and (payload is None or (
                 isinstance(payload, dict) and (payload.get("success") is False
