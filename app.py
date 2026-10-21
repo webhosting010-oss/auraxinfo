@@ -1417,6 +1417,24 @@ def resolve_term_param(ep, term):
         return "userid" if term.isdigit() else "username"
     return ep["term_param"] or "term"
 
+def tg_fetch_url(ep, sterm):
+    """tg ke liye seedha URL fetch (bina @ auto-logic ke) — alternate formats try karne ke liye.
+    Returns (parsed_json_or_None, elapsed_ms, error_text)."""
+    url = (ep["url_template"]
+           .replace("{upstream_key}", urllib.parse.quote(ep["upstream_key"] or ""))
+           .replace("{param}", "term")
+           .replace("{term}", urllib.parse.quote(sterm)))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)", "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace")), \
+                round((time.time() - t0) * 1000, 1), None
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000, 1), f"tg fetch error: {e}"
+
 def fetch_upstream(ep, term):
     """Call upstream URL template, return (parsed_json_or_None, elapsed_ms, error_text)."""
     sterm = term.strip()
@@ -2012,35 +2030,33 @@ def serve_api(slug):
                 payload, dt, err = payload2, round((time.time() - t_all) * 1000, 1), err2
     else:
         payload, dt, err = fetch_upstream(ep, term)
-        if slug == "tg" and isinstance(payload, dict) and \
-                not ((payload.get("data") or {}).get("phone_number")):
-            raw_txt = (payload.get("raw") or "").lower()
-            if "failed to fetch" in raw_txt:
-                # "Failed to fetch external data" = upstream ka random glitch — 2 aur chances
-                for _ in range(2):
-                    r2, d2, _e2 = fetch_upstream(ep, term)
+        if slug == "tg":
+            def _tg_ok(p):
+                return isinstance(p, dict) and \
+                    bool(str(((p.get("data") or {}).get("phone_number")) or "").strip())
+            if not _tg_ok(payload):
+                # DEEP RETRY — upstream flaky hai (empty data / "Failed to fetch" / timeout).
+                # 3 aur attempts, @username aur plain username alternate formats ke saath —
+                # jo record upstream DB me hai, wo ab miss nahi hoga.
+                sterm = term.strip().lstrip("@")
+                variants = [sterm, sterm, sterm] if sterm.isdigit() \
+                    else ["@" + sterm, sterm, "@" + sterm]
+                for v in variants:
+                    r2, d2, _e2 = tg_fetch_url(ep, v)
                     dt = round(dt + (d2 or 0), 1)
-                    if r2 and isinstance(r2, dict) and (r2.get("data") or {}).get("phone_number"):
-                        payload = r2
+                    if _tg_ok(r2):
+                        payload, err = r2, None
                         break
-        if slug == "tg" and isinstance(payload, dict) and \
-                not ((payload.get("data") or {}).get("phone_number")):
-            # fallback: tgosint vercel instance (drazeX key valid hai; unka backend
-            # abhi down hai — jaise hi wapas aayega, ye chain khud se chal padega)
-            fb = tg_fallback_payload(term)
-            if fb:
-                payload = fb
-        if slug == "tg" and payload is None:
-            # upstream poora timeout/network-fail ho gaya — glitch-retry jaisa hi 2 aur chances
-            for _ in range(2):
-                r2, d2, _e2 = fetch_upstream(ep, term)
-                dt = round(dt + (d2 or 0), 1)
-                if r2:
-                    payload = r2
-                    break
-        if slug == "tg" and payload is None:
-            # tab bhi fail — clean "Details not found" style do (502 ke bajaye)
-            payload, err = {"success": False, "data": {}}, None
+                    if r2 is not None:
+                        payload = r2  # latest raw rakho (normalize raw-message ke liye)
+            if isinstance(payload, dict) and not _tg_ok(payload):
+                # tgosint fallback (unka backend wapas aaye to khud chalega)
+                fb = tg_fallback_payload(term)
+                if fb:
+                    payload = fb
+            if payload is None:
+                # sab attempts fail — clean "Details not found" style (502 ke bajaye)
+                payload, err = {"success": False, "data": {}}, None
         if slug in ("num", "osint") and (payload is None or (
                 isinstance(payload, dict) and (payload.get("success") is False
                                                or payload.get("status") is False))):
