@@ -8,7 +8,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: DEVELOPER
-        value: "@auraxinfo"
+        value: "@Yourr_aura"
       - key: MONGO_URI
         value: "mongodb+srv://benbalu17_db_user:Aura%4097519751@cluster0.tij9h6v.mongodb.net/osint_hub?retryWrites=true&w=majority"
       - key: SECRET_KEY

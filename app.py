@@ -31,7 +31,7 @@ SECRET_FILE = os.path.join(DATA_DIR, "secret.key")
 PORT = int(os.environ.get("PORT", "5005"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 
-DEFAULT_DEVELOPER = os.environ.get("DEVELOPER", "@auraxinfo")
+DEFAULT_DEVELOPER = os.environ.get("DEVELOPER", "@Yourr_aura")
 ADMIN_USER = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "aura@9751")
 
@@ -1232,7 +1232,7 @@ DIAL_MAP = {
     "66":"Thailand","670":"Timor-Leste","228":"Togo","216":"Tunisia","90":"Turkey","993":"Turkmenistan",
     "256":"Uganda","380":"Ukraine","971":"UAE","44":"United Kingdom","598":"Uruguay","58":"Venezuela",
     "84":"Vietnam","681":"Wallis & Futuna","967":"Yemen","260":"Zambia","263":"Zimbabwe",
-    "1":"United States/Canada","7":"Russia/Kazakhstan",
+    "1":"United States/Canada","7":"Russia/Kazakhstan","888":"Telegram Anonymous",
 }
 
 def detect_country(ccode, raw_number):
@@ -1284,30 +1284,63 @@ def tg_fallback_payload(term):
         data["country"] = str(d["country"])
     return {"success": True, "data": data}
 
-def normalize_tg(upstream, term):
-    """tg upstream (supabase bot-api telegramtonumber) -> user-started clean style:
-    {result:{country,country_code,verification,msg,number,success,[tg_username],tg_id}, status, cached}"""
-    numeric = term.lstrip("@").isdigit()
-    res = {"country": "Unknown", "country_code": "-", "msg": "Details not found",
-           "number": "", "success": False}
-    d = upstream.get("data") if isinstance(upstream, dict) else None
-    raw_phone = str((d or {}).get("phone_number") or "").strip()
-    if isinstance(d, dict) and raw_phone and "FAILED" not in str(d):
-        ctry, ccx = detect_country("", raw_phone)
-        digits = raw_phone.lstrip("+").replace(" ", "").replace("-", "")
-        # country-code prefix number se hata do (cc alag field me jata hai)
-        cc_digits = (ccx or "").lstrip("+")
-        if cc_digits and digits.startswith(cc_digits) and len(digits) > len(cc_digits):
-            digits = digits[len(cc_digits):]
-        res["msg"] = "Details fetched"
-        res["success"] = True
-        res["number"] = digits
-        res["country"] = str(d.get("country") or ctry)
-        res["country_code"] = ccx
-        if not numeric:
-            res["tg_username"] = term.lstrip("@")
-        res["tg_id"] = str(d.get("telegram_id") or "")
-    return {"result": res, "status": bool(res["success"]), "cached": False}
+def normalize_tg(upstream, term, is_cached=False):
+    """tg upstream -> user requested response style:
+    {result:{country,country_code,msg,number,tg_username,tg_id}, status, cached}"""
+    raw_phone = ""
+    orig_country = ""
+    tg_id = ""
+    uname = ""
+
+    if isinstance(upstream, dict):
+        tg_id = str(upstream.get("tg_id") or upstream.get("id") or (upstream.get("data") or {}).get("telegram_id") or "").strip()
+        uname = str(upstream.get("username") or (upstream.get("data") or {}).get("username") or "").strip().lstrip("@")
+
+        plist = upstream.get("phone")
+        if isinstance(plist, list) and len(plist) > 0:
+            first_p = plist[0]
+            if isinstance(first_p, dict):
+                raw_phone = str(first_p.get("number") or "").strip()
+                orig_country = str(first_p.get("country") or "").strip()
+            elif isinstance(first_p, str):
+                raw_phone = str(first_p).strip()
+        elif isinstance(plist, str):
+            raw_phone = plist.strip()
+        elif upstream.get("phone_number"):
+            raw_phone = str(upstream.get("phone_number")).strip()
+        elif isinstance(upstream.get("data"), dict):
+            raw_phone = str(upstream["data"].get("phone_number") or "").strip()
+            orig_country = str(upstream["data"].get("country") or "").strip()
+
+    if not tg_id and term.strip().lstrip("@").isdigit():
+        tg_id = term.strip().lstrip("@")
+
+    if not uname and not term.strip().lstrip("@").isdigit():
+        uname = term.strip().lstrip("@")
+
+    digits = raw_phone.lstrip("+").replace(" ", "").replace("-", "")
+    has_found = bool(digits) and digits != "None" and "FAILED" not in str(upstream)
+
+    # Auto detect country code & prefix
+    detected_country, detected_cc = detect_country(orig_country, raw_phone)
+
+    # "country": "depend on orignal api" -> use original API country if provided, else detected
+    final_country = orig_country if orig_country else detected_country
+
+    # "country_code": "auto detect"
+    final_cc = detected_cc if (detected_cc and detected_cc != "-") else ("+" + digits[:3] if len(digits) >= 10 else "-")
+
+    res = {
+        "country": final_country if has_found else "Unknown",
+        "country_code": final_cc if has_found else "-",
+        "msg": "Details fetched" if has_found else "Details not found",
+        "number": digits if has_found else "",
+    }
+    if uname:
+        res["tg_username"] = uname
+    res["tg_id"] = tg_id or "-"
+
+    return {"result": res, "status": has_found, "cached": bool(is_cached)}
 
 CAP_REC = 10  # per-dataset records response me rakhne ki limit (total count honest rehta hai)
 
@@ -2107,6 +2140,9 @@ def serve_api(slug):
 
     if is_cached:
         payload, dt, err = cached_payload, 0.0, None
+        if slug == "tg" and isinstance(payload, dict):
+            payload = dict(payload)
+            payload["cached"] = True
     elif slug == "insta":
         # primary sahilxher + backup IG-meta scraper (upstream off ho to bhi response)
         payload, dt, err = fetch_insta_with_backup(ep, term)
@@ -2152,8 +2188,16 @@ def serve_api(slug):
         payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg":
             def _tg_ok(p):
-                return isinstance(p, dict) and \
-                    bool(str(((p.get("data") or {}).get("phone_number")) or "").strip())
+                if not isinstance(p, dict):
+                    return False
+                plist = p.get("phone")
+                if isinstance(plist, list) and len(plist) > 0:
+                    return True
+                if p.get("phone_number"):
+                    return True
+                if isinstance(p.get("data"), dict) and bool(str(p["data"].get("phone_number") or "").strip()):
+                    return True
+                return False
             if not _tg_ok(payload):
                 # DEEP RETRY — upstream flaky hai (empty data / "Failed to fetch" / timeout).
                 # 3 aur attempts, @username aur plain username alternate formats ke saath —
@@ -2277,7 +2321,8 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 502, "Upstream returned empty response",
                                   "no data in upstream response")
             return json_out(env, code)
-        # tg: pass raw upstream response directly into response style
+        if slug == "tg":
+            payload = normalize_tg(payload, term, False)
         if slug == "numpak":
             payload = normalize_pak(payload)
         if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image", "imei", "upi", "ff") and isinstance(payload, dict):
