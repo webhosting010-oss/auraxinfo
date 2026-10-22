@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: auraxinfo
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --timeout 120 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DEVELOPER
+        value: "@auraxinfo"
+      - key: MONGO_URI
+        value: "mongodb+srv://benbalu17_db_user:Aura%4097519751@cluster0.tij9h6v.mongodb.net/osint_hub?retryWrites=true&w=majority"
+      - key: SECRET_KEY
+        value: "aura-osint-hub-permanent-super-secret-key-9751"
