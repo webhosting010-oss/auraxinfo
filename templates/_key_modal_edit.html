@@ -73,11 +73,14 @@
           <input type="date" name="custom_date">
         </div>
 
-        <details style="margin-top:18px;border:1px solid var(--line2);border-radius:12px;padding:12px 16px;background:var(--card2)">
-          <summary style="cursor:pointer;font-weight:800;font-size:13px">🎨 Custom response style <span class="small muted">(sirf isi key ka)</span></summary>
+        <div style="margin-top:14px">
+          <label class="label">Developer handle (response footer <code>"developer"</code> field)</label>
+          <input type="text" name="style_developer" placeholder="{{ developer }}" style="direction:ltr">
+        </div>
+
+        <details style="margin-top:14px;border:1px solid var(--line2);border-radius:12px;padding:12px 16px;background:var(--card2)">
+          <summary style="cursor:pointer;font-weight:800;font-size:13px">⚙️ Advanced JSON template override <span class="small muted">(optional)</span></summary>
           <div style="margin-top:12px">
-            <label class="label">Developer override</label>
-            <input type="text" name="style_developer" placeholder="{{ developer }}" style="direction:ltr">
             <label class="label">Response template (advanced)</label>
             <div class="hintbox">
               Placeholders: <code>__DATA__</code> <code>__KEY_DETAILS__</code> <code>__DEVELOPER__</code> <code>__SUCCESS__</code>

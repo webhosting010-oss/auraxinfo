@@ -3029,6 +3029,7 @@ def admin_settings():
         if what == "brand":
             set_setting("developer", (request.form.get("developer") or "").strip())
             set_setting("maintenance_message", (request.form.get("maintenance_message") or "").strip())
+            sync_to_mongo(force=True)
             flash("Settings saved.", "success")
         elif what == "password":
             cur = request.form.get("current_password", "")

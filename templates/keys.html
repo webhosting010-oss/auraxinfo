@@ -140,7 +140,7 @@
         <td style="text-align:right;white-space:nowrap">
           <div class="actions">
             <button type="button" class="act-btn" title="View" data-row="stat" data-url="/admin/keys/{{ k.id }}">📊</button>
-            <button type="button" class="act-btn" title="Edit" data-edit-key data-url="/admin/keys/{{ k.id }}/update" data-client="{{ k.client }}" data-key="{{ k.key }}" data-note="{{ k.note }}" data-allowed="{{ k.allowed }}" data-usage="{{ k.usage_mode }}" data-daily="{{ k.daily_limit }}" data-permin="{{ k.per_min_limit }}" data-cap="{{ k.total_cap }}" data-expires="{{ k.expires_at[:10] if k.expires_at else '' }}">✏️</button>
+            <button type="button" class="act-btn" title="Edit" data-edit-key data-url="/admin/keys/{{ k.id }}/update" data-client="{{ k.client }}" data-key="{{ k.key }}" data-note="{{ k.note }}" data-allowed="{{ k.allowed }}" data-usage="{{ k.usage_mode }}" data-daily="{{ k.daily_limit }}" data-permin="{{ k.per_min_limit }}" data-cap="{{ k.total_cap }}" data-expires="{{ k.expires_at[:10] if k.expires_at else '' }}" data-dev="{{ k.style_developer or '' }}" data-tpl="{{ k.style_template or '' }}">✏️</button>
             <button type="button" class="act-btn" title="Download details" data-row="download" data-url="/admin/keys/{{ k.id }}/download">⬇️</button>
             <button type="button" class="act-btn del" title="Delete" data-row="delete" data-url="/admin/keys/{{ k.id }}/delete">🗑</button>
           </div>
