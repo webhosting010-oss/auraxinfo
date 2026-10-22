@@ -1324,24 +1324,45 @@ def normalize_tg(upstream, term, is_cached=False):
     digits = raw_phone.lstrip("+").replace(" ", "").replace("-", "")
     has_found = bool(digits) and digits != "None" and "FAILED" not in str(upstream)
 
-    # Auto detect country code & prefix
+    # Auto detect country code & dial prefix
     detected_country, detected_cc = detect_country(orig_country, raw_phone)
 
-    # "country": "depend on orignal api" -> use original API country if provided, else detected
-    final_country = orig_country if orig_country else detected_country
+    # Country detection (auto detect country from dial code if orig_country is empty/placeholder)
+    if orig_country and orig_country not in ("❓", "?", "-", "NA", "Unknown"):
+        final_country = orig_country
+    elif detected_country and detected_country != "Unknown":
+        final_country = detected_country
+    else:
+        final_country = orig_country or "Unknown"
 
-    # "country_code": "auto detect"
     final_cc = detected_cc if (detected_cc and detected_cc != "-") else ("+" + digits[:3] if len(digits) >= 10 else "-")
 
-    res = {
-        "country": final_country if has_found else "Unknown",
-        "country_code": final_cc if has_found else "-",
-        "msg": "Details fetched" if has_found else "Details not found",
-        "number": digits if has_found else "",
-    }
-    if uname:
-        res["tg_username"] = uname
-    res["tg_id"] = tg_id or "-"
+    # Local number formatting (strip country dial code for standard numbers, keep 888 anonymous)
+    cc_digits = (final_cc or "").lstrip("+")
+    local_number = digits
+    if cc_digits and cc_digits != "888" and digits.startswith(cc_digits) and len(digits) > len(cc_digits):
+        local_number = digits[len(cc_digits):]
+
+    is_numeric = term.strip().lstrip("@").isdigit()
+    if is_numeric:
+        # User ID to Num response style
+        res = {
+            "country": final_country if has_found else "Unknown",
+            "country_code": final_cc if has_found else "-",
+            "msg": "Details fetched" if has_found else "Details not found",
+            "number": local_number if has_found else "",
+            "success": bool(has_found),
+        }
+    else:
+        # Username to Info response style
+        res = {
+            "country": final_country if has_found else "Unknown",
+            "country_code": final_cc if has_found else "-",
+            "msg": "Details fetched" if has_found else "Details not found",
+            "number": local_number if has_found else "",
+            "tg_username": uname or term.strip().lstrip("@"),
+            "tg_id": tg_id or "-",
+        }
 
     return {"result": res, "status": has_found, "cached": bool(is_cached)}
 
