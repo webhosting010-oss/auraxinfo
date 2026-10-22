@@ -277,10 +277,10 @@ def init_db():
     conn.execute(
         "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
         "term_param='username' WHERE slug='tg' AND url_template LIKE '%username={term}%'")
-    # migration: tg upstream (supabase bot-api telegramtonumber)
+    # migration: tg upstream (tele-to-phone.felixrdx.xyz)
     conn.execute(
-        "UPDATE endpoints SET url_template='https://jgvicvhgfwcfndgookul.supabase.co/functions/v1/bot-api?key={upstream_key}&tool=telegramtonumber&term={term}', "
-        "upstream_key='CODERPETRO', term_param='term', enabled=1 "
+        "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
+        "upstream_key='6051223b2f1c424bbf9257b371506d52', term_param='username', enabled=1 "
         "WHERE slug='tg'")
     conn.execute("DELETE FROM cache WHERE slug='tg'")
     # migration: ip endpoint (ip-api.com) — purane DB me bhi add ho jaye
@@ -1489,7 +1489,7 @@ def tg_fetch_url(ep, sterm):
     Returns (parsed_json_or_None, elapsed_ms, error_text)."""
     url = (ep["url_template"]
            .replace("{upstream_key}", urllib.parse.quote(ep["upstream_key"] or ""))
-           .replace("{param}", "term")
+           .replace("{param}", resolve_term_param(ep, sterm))
            .replace("{term}", urllib.parse.quote(sterm)))
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (AuraOSINT-Hub/1.0)", "Accept": "application/json",
