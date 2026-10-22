@@ -1254,77 +1254,94 @@ DIAL_MAP = {
 }
 
 COUNTRY_BY_NAME = {v.lower(): (v, "+" + k) for k, v in DIAL_MAP.items()}
-COUNTRY_BY_NAME["usa"] = ("United States/Canada", "+1")
-COUNTRY_BY_NAME["uk"] = ("United Kingdom", "+44")
-COUNTRY_BY_NAME["uae"] = ("UAE", "+971")
+COUNTRY_BY_NAME.update({
+    "usa": ("United States/Canada", "+1"), "us": ("United States/Canada", "+1"),
+    "uk": ("United Kingdom", "+44"), "gb": ("United Kingdom", "+44"),
+    "uae": ("UAE", "+971"), "ae": ("UAE", "+971"),
+    "in": ("India", "+91"), "ro": ("Romania", "+40"), "romania": ("Romania", "+40"),
+    "pk": ("Pakistan", "+92"), "pakistan": ("Pakistan", "+92"),
+    "ru": ("Russia/Kazakhstan", "+7"), "bd": ("Bangladesh", "+880"),
+    "np": ("Nepal", "+977"), "sa": ("Saudi Arabia", "+966"),
+    "de": ("Germany", "+49"), "fr": ("France", "+33"), "it": ("Italy", "+39"),
+    "es": ("Spain", "+34"), "tr": ("Turkey", "+90"), "id": ("Indonesia", "+62")
+})
 
 def detect_country(ccode, raw_number):
     """Clean detection of country name, country_code dial prefix, and local number.
     Returns (country_name, country_code, local_number).
-    NEVER returns '?' or '❓'."""
+    Accurately detects both Indian and International country codes."""
     raw = (raw_number or "").strip()
-    clean_country = (ccode or "").strip()
-    for ch in ["❓", "?", "-", "NA", "Unknown"]:
-        clean_country = clean_country.replace(ch, "").strip()
+    clean = (ccode or "").strip()
+    for ch in ["?", "❓", "-", "NA", "Unknown", "null", "None"]:
+        clean = clean.replace(ch, "").strip()
 
     digits = re.sub(r"\D", "", raw)
     if not digits:
         return "Unknown", "-", ""
 
-    country = "Unknown"
-    country_code = "-"
-    number = digits
+    # 1. Telegram Anonymous +888
+    if digits.startswith("888") and len(digits) == 11:
+        return "Telegram Anonymous", "+888", digits
 
-    if clean_country.lower() in COUNTRY_BY_NAME:
-        country, country_code = COUNTRY_BY_NAME[clean_country.lower()]
+    # 2. Check metadata from upstream
+    meta_country = None
+    meta_cc = None
+    if clean:
+        c_low = clean.lower()
+        if c_low in COUNTRY_BY_NAME:
+            meta_country, meta_cc = COUNTRY_BY_NAME[c_low]
+        elif clean.startswith("+") and clean[1:] in DIAL_MAP:
+            meta_country, meta_cc = DIAL_MAP[clean[1:]], clean
+        elif clean in DIAL_MAP:
+            meta_country, meta_cc = DIAL_MAP[clean], "+" + clean
 
+    # 3. Explicit '+' in raw phone
     if raw.startswith("+"):
         for L in (4, 3, 2, 1):
             p = digits[:L]
             if p in DIAL_MAP:
-                country_code = "+" + p
-                country = DIAL_MAP[p]
-                if p == "888":
-                    number = digits  # Keep full 88805202020 for Telegram Anonymous
+                cname = DIAL_MAP[p]
+                cc = "+" + p
+                rem = digits[L:]
+                return cname, cc, rem
+
+    # 4. If upstream metadata explicitly gave country
+    if meta_country and meta_cc:
+        p = meta_cc.lstrip("+")
+        if digits.startswith(p) and len(digits) > len(p):
+            return meta_country, meta_cc, digits[len(p):]
+        return meta_country, meta_cc, digits
+
+    # 5. International dial code prefix check from digits
+    # Full Indian number with 91 prefix (12 digits)
+    if digits.startswith("91") and len(digits) == 12 and digits[2] in "6789":
+        return "India", "+91", digits[2:]
+
+    # Match 3-digit and 2-digit international prefixes
+    for L in (3, 2):
+        p = digits[:L]
+        if p in DIAL_MAP:
+            rem = digits[L:]
+            if len(rem) >= 6 and len(rem) <= 12:
+                # Do not mistake 10-digit Indian numbers starting with 63 for Philippines
+                if p == "63" and len(digits) == 10 and digits[2] != "9":
+                    pass
                 else:
-                    number = digits[L:]
-                break
-    else:
-        # Indian mobile numbers: 10 digits starting with 6,7,8,9 (e.g. 6352329758)
-        if re.fullmatch(r"[6-9]\d{9}", digits) or (clean_country.lower() == "india" and len(digits) == 10):
-            country = "India"
-            country_code = "+91"
-            number = digits
-        elif len(digits) == 12 and digits.startswith("91") and digits[2] in "6789":
-            country = "India"
-            country_code = "+91"
-            number = digits[2:]
-        elif digits.startswith("888") and len(digits) == 11:
-            country = "Telegram Anonymous"
-            country_code = "+888"
-            number = digits
-        elif country != "Unknown" and country_code != "-":
-            cc_digs = country_code.lstrip("+")
-            if digits.startswith(cc_digs) and len(digits) > len(cc_digs):
-                number = digits[len(cc_digs):]
-            else:
-                number = digits
-        else:
-            for L in (3, 2, 1):
-                p = digits[:L]
-                if p in DIAL_MAP and len(digits) >= (L + 6):
-                    country = DIAL_MAP[p]
-                    country_code = "+" + p
-                    number = digits[L:]
-                    break
+                    return DIAL_MAP[p], "+" + p, rem
 
-    # Final sanitize to ensure NO '?' or '❓' anywhere
-    if any(q in country for q in ("?", "❓")) or not country.strip():
-        country = "Unknown"
-    if country == "Unknown" and country_code != "-" and country_code.lstrip("+") in DIAL_MAP:
-        country = DIAL_MAP[country_code.lstrip("+")]
+    # 6. North America +1 (11 digits: 1 + 10-digit number)
+    if len(digits) == 11 and digits.startswith("1"):
+        return "United States/Canada", "+1", digits[1:]
 
-    return country, country_code, number
+    # 7. Russia/Kazakhstan +7 (11 digits: 7 + 10-digit number)
+    if len(digits) == 11 and digits.startswith("7"):
+        return "Russia/Kazakhstan", "+7", digits[1:]
+
+    # 8. Local Indian mobile (10 digits starting with 6, 7, 8, 9)
+    if re.fullmatch(r"[6-9]\d{9}", digits):
+        return "India", "+91", digits
+
+    return "Unknown", "-", digits
 
 TG_FALLBACK_URL = "https://tgosint.vercel.app/?key=drazeX&q="
 
