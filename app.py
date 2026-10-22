@@ -40,14 +40,77 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# On Vercel, copy seed database to /tmp/data if present
-seed_db = os.path.join(BASE_DIR, "data", "osint_hub.db")
-if os.environ.get("VERCEL") and not os.path.exists(DB_PATH) and os.path.exists(seed_db):
+# ---------------------------------------------------------------- MongoDB Cloud Sync
+MONGO_URI = os.environ.get(
+    "MONGO_URI",
+    "mongodb+srv://benbalu17_db_user:Aura%4097519751@cluster0.tij9h6v.mongodb.net/osint_hub?retryWrites=true&w=majority"
+)
+
+_mongo_last_push = 0
+_mongo_client_inst = None
+
+def get_mongo_fs():
+    global _mongo_client_inst
+    if not MONGO_URI:
+        return None
     try:
-        import shutil
-        shutil.copy2(seed_db, DB_PATH)
-    except Exception as _e:
-        pass
+        from pymongo import MongoClient
+        import gridfs
+        if _mongo_client_inst is None:
+            _mongo_client_inst = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        return gridfs.GridFS(_mongo_client_inst.get_database("osint_hub"))
+    except Exception as e:
+        print("[MONGO CONNECTION ERROR]", e, flush=True)
+        return None
+
+def sync_from_mongo():
+    try:
+        fs = get_mongo_fs()
+        if fs and fs.exists({"filename": "osint_hub.db"}):
+            fout = fs.get_last_version("osint_hub.db")
+            with open(DB_PATH, "wb") as f:
+                f.write(fout.read())
+            print("[MONGO SYNC] Successfully loaded osint_hub.db from MongoDB Atlas", flush=True)
+            return True
+        elif os.path.exists(seed_db):
+            with open(seed_db, "rb") as f:
+                data = f.read()
+            with open(DB_PATH, "wb") as f:
+                f.write(data)
+            if fs:
+                fs.put(data, filename="osint_hub.db")
+                print("[MONGO SYNC] Uploaded seed osint_hub.db to MongoDB Atlas", flush=True)
+            return True
+    except Exception as e:
+        print("[MONGO SYNC FROM ERROR]", e, flush=True)
+    return False
+
+def sync_to_mongo(force=False):
+    global _mongo_last_push
+    now = time.time()
+    if not force and (now - _mongo_last_push < 3):
+        return
+    try:
+        if not os.path.exists(DB_PATH):
+            return
+        fs = get_mongo_fs()
+        if not fs:
+            return
+        with open(DB_PATH, "rb") as f:
+            data = f.read()
+        for old in fs.find({"filename": "osint_hub.db"}):
+            try:
+                fs.delete(old._id)
+            except Exception:
+                pass
+        fs.put(data, filename="osint_hub.db")
+        _mongo_last_push = now
+    except Exception as e:
+        print("[MONGO SYNC TO ERROR]", e, flush=True)
+
+# Seed DB from Mongo or local
+seed_db = os.path.join(BASE_DIR, "data", "osint_hub.db")
+sync_from_mongo()
 
 # ---------------------------------------------------------------- session key
 env_secret = os.environ.get("SECRET_KEY")
@@ -2950,8 +3013,18 @@ def admin_users_delete(uid):
     flash("User deleted.", "success")
     return redirect(url_for("admin_users"))
 
+@app.after_request
+def _mongo_auto_sync(response):
+    if request.method in ("POST", "PUT", "DELETE", "PATCH") or request.path.startswith("/api/"):
+        try:
+            sync_to_mongo()
+        except Exception:
+            pass
+    return response
+
 # -------------------------------------------------------------------- boot
 init_db()
+sync_to_mongo(force=True)
 
 if __name__ == "__main__":
     print(f"AURA OSINT HUB -> http://127.0.0.1:{PORT}   (login: /admin/login)", flush=True)
