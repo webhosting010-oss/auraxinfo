@@ -1901,6 +1901,83 @@ def _flux_space_call_auth(host, fn, kind, prompt, w, h, auth):
                     gerr = "flux-space: " + item[:120]
     return out_url, seed, ms(), gerr
 
+def photoroom_image_generate(prompt, count=1, style="hyper-realistic", size="SQUARE_HD"):
+    """Photoroom serverless AI image generation (high quality realistic images)."""
+    t0 = time.time()
+    try:
+        import requests
+        import urllib3
+        urllib3.disable_warnings()
+
+        auth_resp = requests.post(
+            "https://www.googleapis.com/identitytoolkit/v3/relyingparty/signupNewUser",
+            headers={
+                "Content-Type": "application/json",
+                "X-Android-Package": "com.photoroom.app",
+                "X-Android-Cert": "0424A4898A4B33940D8BF16E44251B876E97F8D0",
+                "X-Client-Version": "Android/Fallback/X23002000/FirebaseCore-Android",
+                "X-Firebase-GMPID": "1:456289768976:android:30c90b24b80bc2d1bfdc95",
+                "X-Firebase-Client": "H4sIAAAAAAAAAKtWykhNLCpJSk0sKVayio7VUSpLLSrOzM9TslIyUqoFAFyivEQfAAAA",
+                "X-Firebase-AppCheck": "eyJlcnJvciI6IlVOS05PV05fRVJST1IifQ==",
+                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 12)",
+            },
+            params={"key": "AIzaSyAJGrgbFGB_-h8V2oJLr4b-_ipetqM0duU"},
+            json={"clientType": "CLIENT_TYPE_ANDROID"},
+            timeout=25,
+            verify=False
+        )
+        token = auth_resp.json().get("idToken")
+        if not token:
+            return None, round((time.time() - t0) * 1000, 1), "photoroom auth failed"
+
+        resp = requests.post(
+            "https://serverless-api.photoroom.com/v2/ai-tools/generate-images",
+            headers={
+                "Accept": "text/event-stream",
+                "Authorization": token,
+                "Content-Type": "application/json; charset=utf-8",
+                "User-Agent": "okhttp/4.12.0",
+                "Pr-App-Version": "2025.47.03 (2180)",
+                "Pr-Platform": "android",
+            },
+            json={
+                "userPrompt": prompt[:2000],
+                "appId": "expert",
+                "styleId": style or "hyper-realistic",
+                "sizeId": size or "SQUARE_HD",
+                "numberOfImages": min(max(int(count or 1), 1), 4),
+            },
+            stream=True,
+            verify=False,
+            timeout=70,
+        )
+
+        urls = []
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            text = line.decode(errors="ignore")
+            if '"eventType":"aiImageResult"' in text:
+                s = text.find('"imageUrl":"') + 12
+                e = text.find('"', s)
+                if e > s:
+                    urls.append(text[s:e])
+
+        dt = round((time.time() - t0) * 1000, 1)
+        if not urls:
+            return None, dt, "photoroom returned no images"
+
+        items = [{"format": "jpeg", "url": u} for u in urls]
+        return {
+            "model": "photoroom-ai-tools",
+            "prompt": prompt[:2000],
+            "count": len(items),
+            "style": style or "hyper-realistic",
+            "images": items
+        }, dt, None
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000, 1), f"photoroom error: {e}"
+
 def gemini_image_fallback(prompt, ratio):
     """Gemini free-key image leg — nano-banana/3.1 models generateContent se b64 image.
     (NVIDIA fail ho tabhi aayega; quota reset/nyi key pe auto chalega)
@@ -2247,24 +2324,31 @@ def serve_api(slug):
         # local TAC database (11.8MB CSV) — Luhn + brand/model, zero upstream, kabhi down nahi
         payload, dt, err = imei_lookup(term)
     elif slug == "image":
-        # Image generation — user ki NVIDIA key (flux-3-image-klein) PRIMARY,
-        # OpenRouter backup, HF Space chain sabse akhir (Pollinations REMOVED)
+        # Image generation — Photoroom AI Tools PRIMARY,
+        # NVIDIA / Gemini / OpenRouter fallbacks
         if len(term) < 3:
             payload, dt, err = None, 0.0, "prompt is too short (min 3 chars)"
         else:
             term = term[:2000]
-            ratio = (request.args.get("aspect_ratio") or request.args.get("ratio") or "").strip()
+            cnt = request.args.get("count") or request.args.get("n") or 1
+            style = request.args.get("style") or "hyper-realistic"
+            size = request.args.get("size") or "SQUARE_HD"
             t_all = time.time()
-            fb, fbd, ferr = nv_image_fallback(term, ratio)   # NVIDIA NIM pehla — ~2s
-            if fb:
-                payload, dt, err = fb, round((time.time() - t_all) * 1000, 1), None
+            fp, fpd, perr = photoroom_image_generate(term, count=cnt, style=style, size=size)
+            if fp:
+                payload, dt, err = fp, round((time.time() - t_all) * 1000, 1), None
             else:
-                fg, fgd, gerr = gemini_image_fallback(term, ratio)  # Gemini leg (free key)
-                if fg:
-                    payload, dt, err = fg, round((time.time() - t_all) * 1000, 1), None
+                ratio = (request.args.get("aspect_ratio") or request.args.get("ratio") or "").strip()
+                fb, fbd, ferr = nv_image_fallback(term, ratio)
+                if fb:
+                    payload, dt, err = fb, round((time.time() - t_all) * 1000, 1), None
                 else:
-                    payload2, dt2, err2 = image_generate(term, ep)  # OpenRouter -> HF fallback chain
-                    payload, dt, err = payload2, round((time.time() - t_all) * 1000, 1), err2
+                    fg, fgd, gerr = gemini_image_fallback(term, ratio)
+                    if fg:
+                        payload, dt, err = fg, round((time.time() - t_all) * 1000, 1), None
+                    else:
+                        payload2, dt2, err2 = image_generate(term, ep)
+                        payload, dt, err = payload2, round((time.time() - t_all) * 1000, 1), err2 or perr
     else:
         payload, dt, err = fetch_upstream(ep, term)
         if slug == "tg":
