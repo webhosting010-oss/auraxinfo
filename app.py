@@ -21,7 +21,10 @@ from flask import (Flask, request, session, redirect, url_for, render_template,
 from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+if os.environ.get("VERCEL"):
+    DATA_DIR = "/tmp/data"
+else:
+    DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "osint_hub.db")
 SECRET_FILE = os.path.join(DATA_DIR, "secret.key")
 
@@ -37,14 +40,32 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# On Vercel, copy seed database to /tmp/data if present
+seed_db = os.path.join(BASE_DIR, "data", "osint_hub.db")
+if os.environ.get("VERCEL") and not os.path.exists(DB_PATH) and os.path.exists(seed_db):
+    try:
+        import shutil
+        shutil.copy2(seed_db, DB_PATH)
+    except Exception as _e:
+        pass
+
 # ---------------------------------------------------------------- session key
-if os.path.exists(SECRET_FILE):
-    with open(SECRET_FILE, "r") as fh:
-        app.secret_key = fh.read().strip()
+env_secret = os.environ.get("SECRET_KEY")
+if env_secret:
+    app.secret_key = env_secret
+elif os.path.exists(SECRET_FILE):
+    try:
+        with open(SECRET_FILE, "r") as fh:
+            app.secret_key = fh.read().strip()
+    except Exception:
+        app.secret_key = "aura-osint-hub-stable-secret-key-9751"
 else:
     app.secret_key = secrets.token_hex(32)
-    with open(SECRET_FILE, "w") as fh:
-        fh.write(app.secret_key)
+    try:
+        with open(SECRET_FILE, "w") as fh:
+            fh.write(app.secret_key)
+    except Exception:
+        pass
 
 # ----------------------------------------------------------------------- db
 def db():
