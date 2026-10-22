@@ -440,7 +440,10 @@ def memcache_put(k, payload):
         pass
 
 def developer_name():
-    return get_setting("developer", DEFAULT_DEVELOPER) or DEFAULT_DEVELOPER
+    d = get_setting("developer", DEFAULT_DEVELOPER)
+    if not d or d == "@auraxinfo":
+        return DEFAULT_DEVELOPER
+    return d
 
 # -------------------------------------------------------------------- cache
 def cache_ttl_minutes():
