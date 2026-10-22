@@ -1238,20 +1238,78 @@ DIAL_MAP = {
     "1":"United States/Canada","7":"Russia/Kazakhstan","888":"Telegram Anonymous",
 }
 
+COUNTRY_BY_NAME = {v.lower(): (v, "+" + k) for k, v in DIAL_MAP.items()}
+COUNTRY_BY_NAME["usa"] = ("United States/Canada", "+1")
+COUNTRY_BY_NAME["uk"] = ("United Kingdom", "+44")
+COUNTRY_BY_NAME["uae"] = ("UAE", "+971")
+
 def detect_country(ccode, raw_number):
-    """country_code field pehle, warna '+...' number ke prefix se dial-code lookup."""
-    c = (ccode or "").strip()
-    if c and c not in ("❓", "?", "-", "NA"):
-        d = c.lstrip("+")
-        if d in DIAL_MAP:
-            return DIAL_MAP[d], "+" + d
+    """Clean detection of country name, country_code dial prefix, and local number.
+    Returns (country_name, country_code, local_number).
+    NEVER returns '?' or '❓'."""
     raw = (raw_number or "").strip()
+    clean_country = (ccode or "").strip()
+    for ch in ["❓", "?", "-", "NA", "Unknown"]:
+        clean_country = clean_country.replace(ch, "").strip()
+
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return "Unknown", "-", ""
+
+    country = "Unknown"
+    country_code = "-"
+    number = digits
+
+    if clean_country.lower() in COUNTRY_BY_NAME:
+        country, country_code = COUNTRY_BY_NAME[clean_country.lower()]
+
     if raw.startswith("+"):
-        digs = raw[1:].replace(" ", "").replace("-", "")
         for L in (4, 3, 2, 1):
-            if digs[:L] in DIAL_MAP:
-                return DIAL_MAP[digs[:L]], "+" + digs[:L]
-    return "Unknown", "-"
+            p = digits[:L]
+            if p in DIAL_MAP:
+                country_code = "+" + p
+                country = DIAL_MAP[p]
+                if p == "888":
+                    number = digits  # Keep full 88805202020 for Telegram Anonymous
+                else:
+                    number = digits[L:]
+                break
+    else:
+        # Indian mobile numbers: 10 digits starting with 6,7,8,9 (e.g. 6352329758)
+        if re.fullmatch(r"[6-9]\d{9}", digits) or (clean_country.lower() == "india" and len(digits) == 10):
+            country = "India"
+            country_code = "+91"
+            number = digits
+        elif len(digits) == 12 and digits.startswith("91") and digits[2] in "6789":
+            country = "India"
+            country_code = "+91"
+            number = digits[2:]
+        elif digits.startswith("888") and len(digits) == 11:
+            country = "Telegram Anonymous"
+            country_code = "+888"
+            number = digits
+        elif country != "Unknown" and country_code != "-":
+            cc_digs = country_code.lstrip("+")
+            if digits.startswith(cc_digs) and len(digits) > len(cc_digs):
+                number = digits[len(cc_digs):]
+            else:
+                number = digits
+        else:
+            for L in (3, 2, 1):
+                p = digits[:L]
+                if p in DIAL_MAP and len(digits) >= (L + 6):
+                    country = DIAL_MAP[p]
+                    country_code = "+" + p
+                    number = digits[L:]
+                    break
+
+    # Final sanitize to ensure NO '?' or '❓' anywhere
+    if any(q in country for q in ("?", "❓")) or not country.strip():
+        country = "Unknown"
+    if country == "Unknown" and country_code != "-" and country_code.lstrip("+") in DIAL_MAP:
+        country = DIAL_MAP[country_code.lstrip("+")]
+
+    return country, country_code, number
 
 TG_FALLBACK_URL = "https://tgosint.vercel.app/?key=drazeX&q="
 
@@ -1324,24 +1382,8 @@ def normalize_tg(upstream, term, is_cached=False):
     digits = raw_phone.lstrip("+").replace(" ", "").replace("-", "")
     has_found = bool(digits) and digits != "None" and "FAILED" not in str(upstream)
 
-    # Auto detect country code & dial prefix
-    detected_country, detected_cc = detect_country(orig_country, raw_phone)
-
-    # Country detection (auto detect country from dial code if orig_country is empty/placeholder)
-    if orig_country and orig_country not in ("❓", "?", "-", "NA", "Unknown"):
-        final_country = orig_country
-    elif detected_country and detected_country != "Unknown":
-        final_country = detected_country
-    else:
-        final_country = orig_country or "Unknown"
-
-    final_cc = detected_cc if (detected_cc and detected_cc != "-") else ("+" + digits[:3] if len(digits) >= 10 else "-")
-
-    # Local number formatting (strip country dial code for standard numbers, keep 888 anonymous)
-    cc_digits = (final_cc or "").lstrip("+")
-    local_number = digits
-    if cc_digits and cc_digits != "888" and digits.startswith(cc_digits) and len(digits) > len(cc_digits):
-        local_number = digits[len(cc_digits):]
+    # Auto detect country, country_code, and clean number
+    final_country, final_cc, local_number = detect_country(orig_country, raw_phone)
 
     is_numeric = term.strip().lstrip("@").isdigit()
     if is_numeric:
