@@ -277,13 +277,11 @@ def init_db():
     conn.execute(
         "UPDATE endpoints SET url_template='https://tele-to-phone.felixrdx.xyz/api/developer/Cyb3rB4nn3r/fast?key={upstream_key}&{param}={term}', "
         "term_param='username' WHERE slug='tg' AND url_template LIKE '%username={term}%'")
-    # migration: tg upstream naya (supabase bot-api telegramtonumber — felix ki key expire thi)
+    # migration: tg upstream (supabase bot-api telegramtonumber)
     conn.execute(
         "UPDATE endpoints SET url_template='https://jgvicvhgfwcfndgookul.supabase.co/functions/v1/bot-api?key={upstream_key}&tool=telegramtonumber&term={term}', "
         "upstream_key='CODERPETRO', term_param='term', enabled=1 "
-        "WHERE slug='tg' AND (upstream_key='6051223b2f1c424bbf9257b371506d52' OR url_template LIKE '%tele-to-phone%' OR enabled=0)")
-    # tg naye normalize style ke baad purane cached payload outdated (91 prefix / verification)
-    # + 'Failed to fetch' fail-results poison cache ka safai (ab failures cache nahi hote)
+        "WHERE slug='tg'")
     conn.execute("DELETE FROM cache WHERE slug='tg'")
     # migration: ip endpoint (ip-api.com) — purane DB me bhi add ho jaye
     if not conn.execute("SELECT 1 x FROM endpoints WHERE slug='ip'").fetchone():
@@ -2279,8 +2277,7 @@ def serve_api(slug):
             env, code = api_error(key_row, slug, 502, "Upstream returned empty response",
                                   "no data in upstream response")
             return json_out(env, code)
-        if slug == "tg":
-            payload = normalize_tg(payload, term)
+        # tg: pass raw upstream response directly into response style
         if slug == "numpak":
             payload = normalize_pak(payload)
         if slug in ("osint", "aadhr", "pincode", "insta", "snap", "domain", "leak", "image", "imei", "upi", "ff") and isinstance(payload, dict):
