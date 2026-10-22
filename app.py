@@ -85,6 +85,15 @@ def sync_from_mongo():
         print("[MONGO SYNC FROM ERROR]", e, flush=True)
     return False
 
+def checkpoint_db():
+    try:
+        if os.path.exists(DB_PATH):
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+    except Exception:
+        pass
+
 def sync_to_mongo(force=False):
     global _mongo_last_push
     now = time.time()
@@ -93,6 +102,7 @@ def sync_to_mongo(force=False):
     try:
         if not os.path.exists(DB_PATH):
             return
+        checkpoint_db()
         fs = get_mongo_fs()
         if not fs:
             return
