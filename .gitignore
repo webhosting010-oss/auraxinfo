@@ -9,3 +9,5 @@ data/secret.key
 
 railway.exe
 railway_cli.zip
+.vercel
+.env*

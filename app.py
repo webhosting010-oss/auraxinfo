@@ -56,8 +56,13 @@ def get_mongo_fs():
     try:
         from pymongo import MongoClient
         import gridfs
+        import certifi
         if _mongo_client_inst is None:
-            _mongo_client_inst = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+            _mongo_client_inst = MongoClient(
+                MONGO_URI,
+                tlsCAFile=certifi.where(),
+                serverSelectionTimeoutMS=8000
+            )
         return gridfs.GridFS(_mongo_client_inst.get_database("osint_hub"))
     except Exception as e:
         print("[MONGO CONNECTION ERROR]", e, flush=True)
@@ -2688,6 +2693,7 @@ def keys_create():
         (kv, f.get("client", "").strip(), f.get("note", "").strip(), access, usage, daily, permin, cap,
          expires, f.get("style_developer", "").strip(), f.get("style_template", "").strip(), now_iso()))
     conn.commit(); conn.close()
+    sync_to_mongo(force=True)
     flash(f"Key created: {kv}", "success")
     return redirect(url_for("admin_keys"))
 
@@ -2716,6 +2722,7 @@ def keys_update(kid):
          int(f.get("per_min_limit") or 0), int(f.get("total_cap") or 0),
          expires, f.get("style_developer", "").strip(), f.get("style_template", "").strip(), kid))
     conn.commit(); conn.close()
+    sync_to_mongo(force=True)
     flash("Key updated.", "success")
     return redirect(request.form.get("back") or url_for("admin_keys"))
 
@@ -2723,6 +2730,7 @@ def _key_action(kid, sql_single, args=()):
     conn = db()
     conn.execute(sql_single, (*args, kid))
     conn.commit(); conn.close()
+    sync_to_mongo(force=True)
 
 @app.route("/admin/keys/<int:kid>/toggle", methods=["POST"])
 @admin_required
@@ -2738,6 +2746,7 @@ def key_reset(kid):
         "UPDATE api_keys SET total_hits=0, today_hits=0, today_date='', minute_hits=0, minute_start=0, "
         "is_active=1 WHERE id=?", (kid,))
     conn.commit(); conn.close()
+    sync_to_mongo(force=True)
     return jsonify(ok=True)
 
 @app.route("/admin/keys/<int:kid>/extend", methods=["POST"])
@@ -2757,6 +2766,7 @@ def key_extend(kid):
     conn.execute("UPDATE api_keys SET expires_at=?, is_active=1 WHERE id=?",
                  ((base + timedelta(days=days)).strftime("%Y-%m-%d"), kid))
     conn.commit(); conn.close()
+    sync_to_mongo(force=True)
     return jsonify(ok=True)
 
 @app.route("/admin/keys/<int:kid>/delete", methods=["POST"])
@@ -2765,6 +2775,7 @@ def key_delete(kid):
     conn = db()
     conn.execute("DELETE FROM api_keys WHERE id=?", (kid,))
     conn.commit(); conn.close()
+    sync_to_mongo(force=True)
     return jsonify(ok=True)
 
 @app.route("/admin/keys/bulk", methods=["POST"])
@@ -2801,6 +2812,7 @@ def keys_bulk():
     elif action == "delete":
         conn.execute(f"DELETE FROM api_keys WHERE id IN ({marks})", ids)
     conn.commit(); conn.close()
+    sync_to_mongo(force=True)
     return jsonify(ok=True)
 
 @app.route("/admin/keys/<int:kid>/download")
