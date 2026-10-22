@@ -113,22 +113,7 @@ seed_db = os.path.join(BASE_DIR, "data", "osint_hub.db")
 sync_from_mongo()
 
 # ---------------------------------------------------------------- session key
-env_secret = os.environ.get("SECRET_KEY")
-if env_secret:
-    app.secret_key = env_secret
-elif os.path.exists(SECRET_FILE):
-    try:
-        with open(SECRET_FILE, "r") as fh:
-            app.secret_key = fh.read().strip()
-    except Exception:
-        app.secret_key = "aura-osint-hub-stable-secret-key-9751"
-else:
-    app.secret_key = secrets.token_hex(32)
-    try:
-        with open(SECRET_FILE, "w") as fh:
-            fh.write(app.secret_key)
-    except Exception:
-        pass
+app.secret_key = os.environ.get("SECRET_KEY", "aura-osint-hub-permanent-super-secret-key-9751")
 
 # ----------------------------------------------------------------------- db
 def db():
@@ -2550,9 +2535,11 @@ def admin_keys():
     return render_template("keys.html", keys=keys, eps=eps, status=status, q=q,
                            today=today_str(), admin=admin_row())
 
-@app.route("/admin/keys/create", methods=["POST"])
+@app.route("/admin/keys/create", methods=["GET", "POST"])
 @admin_required
 def keys_create():
+    if request.method == "GET":
+        return redirect(url_for("admin_keys"))
     f = request.form
     kv = (f.get("key", "").strip() if f.get("custom_toggle") == "on" else "") \
          or secrets.token_hex(8)
